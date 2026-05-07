@@ -1,0 +1,11 @@
+node_modules/
+.next/
+*.db
+__pycache__/
+*.pyc
+.env
+exports/
+.vscode/
+.idea/
+*.egg-info/
+dist/
