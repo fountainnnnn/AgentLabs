@@ -32,7 +32,7 @@ export default function AgentSourcePanel({
         border: "1px solid #DCD8CC",
         padding: "12px",
         gap: "10px",
-        minHeight: "160px",
+        minHeight: "190px",
       }}
     >
       {/* Header */}
@@ -63,26 +63,26 @@ export default function AgentSourcePanel({
       </div>
 
       {/* Status badges row */}
-      <div className="flex items-center gap-3">
-        <span className="text-[12px] font-medium flex-shrink-0" style={{ color: "#575A60", width: "80px" }}>
+      <div className="grid gap-2" style={{ gridTemplateColumns: "80px minmax(0, 1fr)" }}>
+        <span className="text-[12px] font-medium self-start pt-1" style={{ color: "#575A60" }}>
           Status
         </span>
-        <div className="flex items-center gap-2 flex-wrap">
+        <div className="grid gap-1.5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(138px, 1fr))" }}>
           <span
-            className="badge"
-            style={{ background: sysBadge.bg, color: sysBadge.color }}
+            className="min-w-0 rounded-md px-2 py-1 text-[11px] font-semibold leading-none"
+            style={{ background: sysBadge.bg, color: sysBadge.color, border: `1px solid ${sysBadge.color}22` }}
           >
             System Prompt: {sysBadge.label}
           </span>
           <span
-            className="badge"
-            style={{ background: toolBadge.bg, color: toolBadge.color }}
+            className="min-w-0 rounded-md px-2 py-1 text-[11px] font-semibold leading-none"
+            style={{ background: toolBadge.bg, color: toolBadge.color, border: `1px solid ${toolBadge.color}22` }}
           >
             Tool Schema: {toolBadge.label}
           </span>
           <span
-            className="badge"
-            style={{ background: "rgba(37, 99, 235, 0.12)", color: "#2563EB" }}
+            className="min-w-0 rounded-md px-2 py-1 text-[11px] font-semibold leading-none"
+            style={{ background: "rgba(37, 99, 235, 0.12)", color: "#2563EB", border: "1px solid rgba(37, 99, 235, 0.14)" }}
           >
             Runtime: {runtimeMode}
           </span>
@@ -90,11 +90,11 @@ export default function AgentSourcePanel({
       </div>
 
       {/* Action buttons */}
-      <div className="flex items-center gap-2 mt-auto">
+      <div className="grid gap-2 mt-auto" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))" }}>
         <button
           type="button"
           onClick={onLoadDemo}
-          className="h-8 px-4 rounded-lg text-[13px] font-semibold transition-opacity hover:opacity-90"
+          className="h-8 min-w-0 px-3 rounded-lg text-[13px] font-semibold transition-opacity hover:opacity-90"
           style={{
             background: "#2563EB",
             color: "#FFFFFF",
@@ -106,7 +106,7 @@ export default function AgentSourcePanel({
         <button
           type="button"
           onClick={onUploadAgent}
-          className="h-8 px-4 rounded-lg text-[13px] font-semibold transition-opacity hover:opacity-80"
+          className="h-8 min-w-0 px-3 rounded-lg text-[13px] font-semibold transition-opacity hover:opacity-80"
           style={{
             background: "#FFFFFF",
             color: "#575A60",

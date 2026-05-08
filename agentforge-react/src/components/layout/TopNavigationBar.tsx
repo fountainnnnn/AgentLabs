@@ -1,4 +1,6 @@
 
+import { Link } from "react-router-dom";
+
 interface TopNavigationBarProps {
   mode?: string;
   onRunWave?: () => void;
@@ -40,18 +42,23 @@ export default function TopNavigationBar({
       }}
     >
       {/* Left: brand */}
-      <div className="flex items-center gap-3">
-        <div
-          className="rounded-sm flex items-center justify-center text-[10px] font-bold"
+      <Link
+        to="/"
+        aria-label="Back to AgentForge menu"
+        className="flex items-center gap-3 rounded-md transition-opacity hover:opacity-80 focus:outline-none focus:ring-2 focus:ring-offset-2"
+        style={{ color: "inherit", textDecoration: "none", ["--tw-ring-color" as string]: accent }}
+      >
+        <img
+          src="/assets/agentforge/brand/agentforge-logo.png"
+          alt=""
+          aria-hidden="true"
+          className="block flex-shrink-0"
           style={{
-            width: "16px",
-            height: "16px",
-            background: accent,
-            color: "#FFFFFF",
+            width: "30px",
+            height: "30px",
+            objectFit: "contain",
           }}
-        >
-          AF
-        </div>
+        />
         <div className="flex items-baseline gap-2">
           <span
             className="font-bold tracking-tight"
@@ -66,7 +73,7 @@ export default function TopNavigationBar({
             {label}
           </span>
         </div>
-      </div>
+      </Link>
 
       {/* Center-right: status */}
       <div className="flex items-center gap-2">

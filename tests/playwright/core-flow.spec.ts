@@ -70,21 +70,17 @@ test.describe("AgentForge Dual-Mode Revamp", () => {
   /*  2 – Process strip                                                 */
   /* ------------------------------------------------------------------ */
 
-  test("2 - process strip shows 6 steps", async ({ page }) => {
+  test("2 - process strip shows 7 steps", async ({ page }) => {
     await page.goto("/");
 
-    // Six-step process strip below the mode cards
+    // Seven-step process strip below the mode cards
     await expect(page.getByText("Upload", { exact: true })).toBeVisible();
 
-    // "Spawn" appears inside the "Spawn\nHarnesses" step text
-    await expect(page.getByText("Spawn").first()).toBeVisible();
-
-    await expect(page.getByText("Attack", { exact: true })).toBeVisible();
-    await expect(page.getByText("Verify", { exact: true })).toBeVisible();
-
-    // "Patch" appears inside the "Patch\nor Train" step text
-    await expect(page.getByText("Patch").first()).toBeVisible();
-
+    await expect(page.getByText("Spawn Harnesses", { exact: true })).toBeVisible();
+    await expect(page.getByText("Attack or Evaluate", { exact: true })).toBeVisible();
+    await expect(page.getByText("Verify or Score", { exact: true })).toBeVisible();
+    await expect(page.getByText("Patch or Train", { exact: true })).toBeVisible();
+    await expect(page.getByText("Retest", { exact: true })).toBeVisible();
     await expect(page.getByText("Export", { exact: true })).toBeVisible();
   });
 
@@ -256,6 +252,13 @@ test.describe("AgentForge Dual-Mode Revamp", () => {
     await page.getByRole("button", { name: "Start Agent Hardening" }).click();
     await page.waitForURL("**/agent-hardening");
     await expect(page.getByText("Agent Hardening Arena")).toBeVisible();
+
+    // Brand/logo returns to the main menu
+    await page.getByRole("link", { name: "Back to AgentForge menu" }).click();
+    await page.waitForURL("**/");
+    await expect(
+      page.getByText("LLM Reinforcement Lab")
+    ).toBeVisible();
 
     // Return to home
     await page.goto("/");
