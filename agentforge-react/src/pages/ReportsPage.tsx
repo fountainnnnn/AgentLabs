@@ -1,184 +1,343 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 
-interface Report {
+type ReportMode = "agent-hardening" | "rl-lab";
+type Filter = "all" | ReportMode;
+
+interface RunReport {
   id: string;
+  mode: ReportMode;
   title: string;
-  type: "agent-hardening" | "rl-lab";
-  date: string;
+  target: string;
+  runStatus: "Complete" | "Review needed" | "Export ready";
+  completedAt: string;
   wave: number;
-  attacksTested: number;
+  harnesses: number;
+  passRateBefore: number;
+  passRateAfter: number;
   failures: number;
-  robustnessGain: number;
-  modelName: string;
+  duration: string;
+  realOrSimulated: "demo_simulation" | "adapter_simulation" | "real_local_model";
+  artifactCount: number;
+  clusters: string[];
+  timeline: string[];
+  metadata: Record<string, string | number | boolean>;
 }
 
-const MOCK_REPORTS: Report[] = [
+const reports: RunReport[] = [
   {
-    id: "rpt-1",
-    title: "RefundBot v0 — Wave 1",
-    type: "agent-hardening",
-    date: "2026-05-07 14:23",
-    wave: 1,
-    attacksTested: 48,
+    id: "AH-2026-0507-001",
+    mode: "agent-hardening",
+    title: "RefundBot wrapper hardening run",
+    target: "RefundBot Agent",
+    runStatus: "Export ready",
+    completedAt: "2026-05-07 14:31",
+    wave: 8,
+    harnesses: 1248,
+    passRateBefore: 58,
+    passRateAfter: 94,
+    failures: 6,
+    duration: "08:42",
+    realOrSimulated: "demo_simulation",
+    artifactCount: 4,
+    clusters: [
+      "policy extraction against private refund threshold",
+      "role impersonation with false escalation authority",
+      "prompt injection through tool-call argument stuffing",
+    ],
+    timeline: [
+      "Harness army prepared for RefundBot v0",
+      "Verifier trace captured 48 wrapper failures",
+      "Prompt Guard patch applied to output filter and tool schema",
+      "Retest wave reduced failures from 42 percent to 6 percent",
+    ],
+    metadata: {
+      export_type: "hardened_wrapper_report",
+      model_weights_exported: false,
+      structured_traces: true,
+    },
+  },
+  {
+    id: "RL-2026-0507-001",
+    mode: "rl-lab",
+    title: "Local adapter simulation run",
+    target: "Llama-3.1-8B-Instruct",
+    runStatus: "Complete",
+    completedAt: "2026-05-07 15:04",
+    wave: 6,
+    harnesses: 960,
+    passRateBefore: 42,
+    passRateAfter: 91,
     failures: 9,
-    robustnessGain: 0,
-    modelName: "RefundBot-3000",
+    duration: "11:18",
+    realOrSimulated: "adapter_simulation",
+    artifactCount: 5,
+    clusters: [
+      "jailbreak prompts with deceptive instruction hierarchy",
+      "reward hacking probes against refusal precision",
+      "hallucination traps with fabricated policy citations",
+    ],
+    timeline: [
+      "Demo Simulation Mode initialized without local model upload",
+      "Reward components scored correctness, refusal, leakage, and consistency",
+      "Adapter simulation checkpoint saved with frozen base model metadata",
+      "Export marked not_trained_on_openai_weights as true",
+    ],
+    metadata: {
+      not_trained_on_openai_weights: true,
+      local_model_required_for_real_training: true,
+      reward_trace_included: true,
+    },
   },
   {
-    id: "rpt-2",
-    title: "RefundBot v1 — Wave 2 (Patched)",
-    type: "agent-hardening",
-    date: "2026-05-07 14:28",
-    wave: 2,
-    attacksTested: 48,
+    id: "AH-2026-0506-003",
+    mode: "agent-hardening",
+    title: "Regression certification precheck",
+    target: "RefundBot Agent",
+    runStatus: "Review needed",
+    completedAt: "2026-05-06 18:42",
+    wave: 19,
+    harnesses: 3584,
+    passRateBefore: 83,
+    passRateAfter: 97,
     failures: 3,
-    robustnessGain: 36,
-    modelName: "RefundBot-3000",
-  },
-  {
-    id: "rpt-3",
-    title: "Llama-3.2 RL Run 1",
-    type: "rl-lab",
-    date: "2026-05-07 15:01",
-    wave: 1,
-    attacksTested: 100,
-    failures: 0,
-    robustnessGain: 0,
-    modelName: "Llama-3.2-3B",
-  },
-  {
-    id: "rpt-4",
-    title: "Mistral-7B RL Run — Adapter v2",
-    type: "rl-lab",
-    date: "2026-05-06 22:15",
-    wave: 2,
-    attacksTested: 200,
-    failures: 0,
-    robustnessGain: 0,
-    modelName: "Mistral-7B-v0.3",
-  },
-  {
-    id: "rpt-5",
-    title: "RefundBot v3 — Wave 3 (Final)",
-    type: "agent-hardening",
-    date: "2026-05-06 18:42",
-    wave: 3,
-    attacksTested: 48,
-    failures: 0,
-    robustnessGain: 42,
-    modelName: "RefundBot-3000",
+    duration: "16:09",
+    realOrSimulated: "demo_simulation",
+    artifactCount: 3,
+    clusters: [
+      "multi-turn escalation after partial order lookup",
+      "policy leakage via comparison request",
+      "tool permission drift after replay",
+    ],
+    timeline: [
+      "Certification precheck executed across previous failures",
+      "Three traces flagged for human review",
+      "Wrapper report generated with limitations section",
+      "Export bundle pending review signoff",
+    ],
+    metadata: {
+      export_type: "hardened_wrapper_bundle",
+      limitations_included: true,
+      requires_review: true,
+    },
   },
 ];
 
 export default function ReportsPage() {
-  const [filter, setFilter] = useState<"all" | "agent-hardening" | "rl-lab">("all");
+  const [filter, setFilter] = useState<Filter>("all");
+  const [selectedId, setSelectedId] = useState(reports[0].id);
 
-  const filtered = filter === "all" ? MOCK_REPORTS : MOCK_REPORTS.filter((r) => r.type === filter);
+  const filteredReports = useMemo(
+    () => reports.filter((report) => filter === "all" || report.mode === filter),
+    [filter],
+  );
+
+  const selectedReport =
+    filteredReports.find((report) => report.id === selectedId) ??
+    filteredReports[0] ??
+    reports[0];
+
+  const totals = useMemo(() => {
+    const totalHarnesses = filteredReports.reduce((sum, report) => sum + report.harnesses, 0);
+    const totalFailures = filteredReports.reduce((sum, report) => sum + report.failures, 0);
+    const improvement =
+      filteredReports.length === 0
+        ? 0
+        : Math.round(
+            filteredReports.reduce(
+              (sum, report) => sum + report.passRateAfter - report.passRateBefore,
+              0,
+            ) / filteredReports.length,
+          );
+
+    return {
+      runs: filteredReports.length,
+      totalHarnesses,
+      totalFailures,
+      improvement,
+    };
+  }, [filteredReports]);
 
   return (
-    <div
-      className="flex flex-col min-h-screen w-full"
-      style={{ background: "#FCFCF7" }}
-    >
-      {/* Header */}
-      <header
-        className="flex items-center justify-between w-full flex-shrink-0 px-8 py-5"
-        style={{ borderBottom: "1px solid #DCD8CC" }}
-      >
-        <div className="flex items-baseline gap-3">
-          <Link
-            to="/"
-            className="font-bold tracking-tight hover:opacity-70 transition-opacity"
-            style={{ fontSize: "18px", color: "#1D1D1F" }}
-          >
-            AgentForge
-          </Link>
-          <span style={{ fontSize: "18px", color: "#DCD8CC" }}>/</span>
-          <h1 className="font-semibold" style={{ fontSize: "18px", color: "#1D1D1F" }}>
-            Reports
-          </h1>
-        </div>
-        <div className="flex items-center gap-2">
-          <FilterChip active={filter === "all"} onClick={() => setFilter("all")} label="All" />
-          <FilterChip active={filter === "agent-hardening"} onClick={() => setFilter("agent-hardening")} label="Agent Hardening" />
-          <FilterChip active={filter === "rl-lab"} onClick={() => setFilter("rl-lab")} label="RL Lab" />
+    <div className="af-page">
+      <header className="af-topbar flex items-center justify-between gap-4 px-5">
+        <Link to="/" className="af-brand-link" aria-label="Back to AgentForge menu">
+          <img
+            src="/assets/agentforge/brand/agentforge-logo.png"
+            alt=""
+            aria-hidden="true"
+            className="af-brand-logo"
+          />
+          <span>
+            <span className="af-brand-word">AgentForge</span>
+            <span className="af-brand-subtitle">Reports and run evidence</span>
+          </span>
+        </Link>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <FilterChip label="All" active={filter === "all"} onClick={() => setFilter("all")} />
+          <FilterChip
+            label="Agent Hardening"
+            active={filter === "agent-hardening"}
+            onClick={() => setFilter("agent-hardening")}
+          />
+          <FilterChip
+            label="RL Lab"
+            active={filter === "rl-lab"}
+            onClick={() => setFilter("rl-lab")}
+          />
         </div>
       </header>
 
-      {/* Report list */}
-      <main style={{ maxWidth: "960px", margin: "0 auto", padding: "32px", width: "100%" }}>
-        {filtered.length === 0 && (
-          <div className="text-sm text-center py-16" style={{ color: "#7A7D85" }}>
-            No reports found for this filter.
-          </div>
-        )}
+      <main className="af-page-main">
+        <div className="af-container-wide grid gap-4">
+          <section className="af-panel-canvas p-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <p className="af-section-label">Run observability</p>
+                <h1 className="mt-3 text-[28px] font-semibold leading-tight text-[#1D1D1F] md:text-[34px]">
+                  Reports
+                </h1>
+                <p className="mt-2 max-w-[760px] text-[14px] leading-6 text-[#575A60]">
+                  Inspect adversarial runs, failure clusters, verifier traces,
+                  reward traces, and export metadata without overstating what was
+                  simulated.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <span className="af-chip">Structured logs</span>
+                <span className="af-chip">Trace evidence</span>
+                <span className="af-chip">Truthful artifacts</span>
+              </div>
+            </div>
+          </section>
 
-        <div className="flex flex-col gap-3">
-          {filtered.map((report) => (
-            <div
-              key={report.id}
-              className="panel p-4 flex items-center justify-between transition-shadow hover:shadow-sm"
-            >
-              <div className="flex items-center gap-4">
-                {/* Type icon */}
-                <div
-                  className="w-9 h-9 rounded-btn flex items-center justify-center text-xs font-bold flex-shrink-0"
-                  style={{
-                    background: report.type === "agent-hardening"
-                      ? "rgba(37,99,235,0.12)"
-                      : "rgba(124,58,237,0.12)",
-                    color: report.type === "agent-hardening" ? "#2563EB" : "#7C3AED",
-                  }}
-                >
-                  {report.type === "agent-hardening" ? "AH" : "RL"}
-                </div>
+          <section className="af-metric-grid" aria-label="Report summary">
+            <Kpi label="Runs" value={totals.runs} suffix="visible" color="#1D1D1F" />
+            <Kpi label="Harnesses" value={totals.totalHarnesses.toLocaleString()} suffix="tested" color="#0284C7" />
+            <Kpi label="Failures" value={totals.totalFailures} suffix="open" color="#C2414B" />
+            <Kpi label="Mean lift" value={`+${totals.improvement}`} suffix="pts" color="#21865A" />
+          </section>
 
-                <div>
-                  <div className="text-sm font-semibold" style={{ color: "#1D1D1F" }}>
-                    {report.title}
-                  </div>
-                  <div className="flex items-center gap-3 mt-1">
-                    <span className="text-xs" style={{ color: "#7A7D85" }}>
-                      {report.date}
-                    </span>
-                    <span className="text-xs" style={{ color: "#7A7D85" }}>
-                      Model: {report.modelName}
-                    </span>
-                    {report.type === "agent-hardening" && (
-                      <>
-                        <span className="text-xs" style={{ color: "#575A60" }}>
-                          Attacks: {report.attacksTested}
-                        </span>
-                        <span
-                          className="text-xs font-semibold"
-                          style={{ color: report.failures > 0 ? "#C2414B" : "#21865A" }}
-                        >
-                          Failures: {report.failures}
-                        </span>
-                        {report.robustnessGain > 0 && (
-                          <span className="text-xs font-semibold" style={{ color: "#21865A" }}>
-                            +{report.robustnessGain}% Robustness
-                          </span>
-                        )}
-                      </>
-                    )}
-                  </div>
-                </div>
+          <section className="grid gap-4 xl:grid-cols-[minmax(560px,1fr)_minmax(420px,0.72fr)]">
+            <div className="af-panel-canvas overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#DCD8CC] px-4 py-3">
+                <p className="af-section-label">Run index</p>
+                <span className="af-chip af-mono">{filteredReports.length} records</span>
               </div>
 
-              <button
-                className="h-8 px-4 rounded-btn text-xs font-semibold transition-opacity hover:opacity-80 flex-shrink-0"
-                style={{
-                  background: "#FFFFFF",
-                  color: "#575A60",
-                  border: "1px solid #DCD8CC",
-                }}
-              >
-                View Report
-              </button>
+              <div className="overflow-x-auto">
+                <table className="af-table min-w-[860px]">
+                  <thead>
+                    <tr>
+                      <th>Run</th>
+                      <th>Target</th>
+                      <th>Mode</th>
+                      <th>Wave</th>
+                      <th>Pass rate</th>
+                      <th>Failures</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredReports.map((report) => {
+                      const active = report.id === selectedReport.id;
+                      return (
+                        <tr key={report.id} style={{ background: active ? "#F0F8FF" : "transparent" }}>
+                          <td>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedId(report.id)}
+                              className="text-left font-semibold text-[#1D1D1F] underline-offset-4 hover:underline"
+                            >
+                              {report.title}
+                            </button>
+                            <span className="af-mono mt-1 block text-[11px] text-[#7A7D85]">
+                              {report.id}
+                            </span>
+                          </td>
+                          <td>{report.target}</td>
+                          <td>
+                            <span className="af-chip" style={{ color: modeColor(report.mode) }}>
+                              {modeLabel(report.mode)}
+                            </span>
+                          </td>
+                          <td className="af-mono">W{String(report.wave).padStart(2, "0")}</td>
+                          <td className="af-mono text-[#21865A]">
+                            {report.passRateBefore}% to {report.passRateAfter}%
+                          </td>
+                          <td className="af-mono text-[#C2414B]">{report.failures}</td>
+                          <td>{report.runStatus}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          ))}
+
+            <aside className="grid gap-4">
+              <section className="af-panel-canvas p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="af-section-label">Selected run</p>
+                    <h2 className="mt-2 text-[21px] font-semibold leading-tight text-[#1D1D1F]">
+                      {selectedReport.title}
+                    </h2>
+                    <p className="mt-1 af-mono text-[12px] text-[#7A7D85]">
+                      {selectedReport.id}
+                    </p>
+                  </div>
+                  <span className="af-chip" style={{ color: modeColor(selectedReport.mode) }}>
+                    {modeLabel(selectedReport.mode)}
+                  </span>
+                </div>
+
+                <div className="mt-4 grid grid-cols-2 gap-2">
+                  <DetailCell label="Completed" value={selectedReport.completedAt} />
+                  <DetailCell label="Duration" value={selectedReport.duration} />
+                  <DetailCell label="Artifacts" value={selectedReport.artifactCount} />
+                  <DetailCell label="real_or_simulated" value={selectedReport.realOrSimulated} mono />
+                </div>
+              </section>
+
+              <section className="af-panel p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="af-section-label">Failure clusters</p>
+                  <span className="af-chip">{selectedReport.clusters.length} clusters</span>
+                </div>
+                <div className="mt-3 grid gap-2">
+                  {selectedReport.clusters.map((cluster, index) => (
+                    <div
+                      key={cluster}
+                      className="grid grid-cols-[28px_minmax(0,1fr)] gap-3 rounded-lg border border-[#DCD8CC] bg-[#FDFDFD] px-3 py-2 text-[13px] leading-5 text-[#575A60]"
+                    >
+                      <span className="af-mono font-bold text-[#C2414B]">
+                        {String(index + 1).padStart(2, "0")}
+                      </span>
+                      <span>{cluster}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+
+              <section className="af-panel-cool p-4">
+                <p className="af-section-label">Timeline and metadata</p>
+                <div className="mt-3 af-log">
+                  {selectedReport.timeline.map((item, index) => (
+                    <div key={item} className="af-log-row">
+                      <span className="af-mono">{`T+${String(index).padStart(2, "0")}`}</span>
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 rounded-lg border border-[#DCD8CC] bg-[#FDFDFD] p-3">
+                  <pre className="af-mono whitespace-pre-wrap break-all text-[12px] leading-5 text-[#575A60]">
+                    {JSON.stringify(selectedReport.metadata, null, 2)}
+                  </pre>
+                </div>
+              </section>
+            </aside>
+          </section>
         </div>
       </main>
     </div>
@@ -196,15 +355,65 @@ function FilterChip({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className="h-8 px-3 rounded-btn text-xs font-semibold transition-all"
+      className="af-button h-8 min-h-8 px-3"
       style={{
-        background: active ? "#1D1D1F" : "#FAF9F6",
-        color: active ? "#FFFFFF" : "#575A60",
-        border: active ? "none" : "1px solid #DCD8CC",
+        background: active ? "#1D1D1F" : "#FDFDFD",
+        borderColor: active ? "#1D1D1F" : "#DCD8CC",
+        color: active ? "#FDFDFD" : "#575A60",
       }}
     >
       {label}
     </button>
   );
+}
+
+function Kpi({
+  label,
+  value,
+  suffix,
+  color,
+}: {
+  label: string;
+  value: string | number;
+  suffix: string;
+  color: string;
+}) {
+  return (
+    <div className="af-metric">
+      <span className="af-metric-label">{label}</span>
+      <span className="af-metric-value af-mono" style={{ color }}>
+        {value}
+        <span className="ml-1 text-[13px] font-semibold text-[#7A7D85]">{suffix}</span>
+      </span>
+    </div>
+  );
+}
+
+function DetailCell({
+  label,
+  value,
+  mono = false,
+}: {
+  label: string;
+  value: string | number;
+  mono?: boolean;
+}) {
+  return (
+    <div className="rounded-lg border border-[#DCD8CC] bg-[#FDFDFD] px-3 py-2">
+      <span className="af-meta font-semibold">{label}</span>
+      <span className={`mt-1 block text-[13px] font-semibold text-[#1D1D1F] ${mono ? "af-mono" : ""}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function modeLabel(mode: ReportMode) {
+  return mode === "agent-hardening" ? "Agent Hardening" : "RL Lab";
+}
+
+function modeColor(mode: ReportMode) {
+  return mode === "agent-hardening" ? "#2563EB" : "#7C3AED";
 }

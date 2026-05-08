@@ -1,56 +1,43 @@
-import { useState, useCallback, useMemo, useRef } from "react";
-import React from "react";
+import { Suspense, lazy, useCallback, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import WorkspaceShell from "@/components/layout/WorkspaceShell";
 import TopNavigationBar from "@/components/layout/TopNavigationBar";
-import ModelUploadPanel from "@/components/rl-lab/ModelUploadPanel";
-import RewardSignalPanel from "@/components/rl-lab/RewardSignalPanel";
-import TrainingOptimizationPanel from "@/components/rl-lab/TrainingOptimizationPanel";
-import CheckpointGenerationsPanel from "@/components/rl-lab/CheckpointGenerationsPanel";
-import TrainingLogPanel from "@/components/rl-lab/TrainingLogPanel";
-
-const PixiArenaWrapper = React.lazy(() => import("@/components/arena/PixiArenaWrapper"));
-
 import {
   createInitialRLLabState,
+  MOCK_RL_LAB_ARMY,
   MOCK_RL_LAB_WAVES,
-  MOCK_RL_CHECKPOINTS,
-  MOCK_REWARD_COMPONENTS,
 } from "@/data/mockData";
 import type {
+  BattleEvent,
+  BattleState,
   RLLabState,
   RLCheckpoint,
-  BattleEvent,
   RewardComponents,
   WaveDefinition,
 } from "@/types/agentforge";
 
-/* ========================================================================== */
-/*  Page Component                                                           */
-/* ========================================================================== */
+const PixiArenaWrapper = lazy(() => import("@/components/arena/PixiArenaWrapper"));
 
 export default function RLLabPage() {
-  const [rlState, setRLState] = useState<RLLabState>(
-    createInitialRLLabState,
+  const [rlState, setRLState] = useState<RLLabState>(() =>
+    createInitialRLLabState(),
   );
   const [isRunning, setIsRunning] = useState(false);
-  const [logs, setLogs] = useState<string[]>([
-    "[RL Lab] Environment initialized. Waiting for training command.",
-  ]);
-  const [animationPhase, setAnimationPhase] = useState("idle");
   const [speed, setSpeed] = useState(1);
   const [currentWave, setCurrentWave] = useState(1);
   const [autoRun, setAutoRun] = useState(true);
+  const [narration, setNarration] = useState(
+    "Demo Simulation Mode ready. No OpenAI weights are trained.",
+  );
   const autoRunRef = useRef(autoRun);
   autoRunRef.current = autoRun;
 
-  const appendLog = useCallback((msg: string) => {
-    setLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`]);
-  }, []);
-
-  /* ---- Derived Metrics ---- */
+  const activeCheckpoint =
+    rlState.checkpoints.find((checkpoint) => checkpoint.id === rlState.activeCheckpointId) ??
+    rlState.checkpoints[0];
 
   const derivedMetrics = useMemo(() => {
-    const bestReward = Math.max(
+    const bestSignal = Math.max(
       rlState.rewardComponents.policyAdherence,
       rlState.rewardComponents.correctness,
       rlState.rewardComponents.refusalAccuracy,
@@ -58,243 +45,190 @@ export default function RLLabPage() {
       rlState.rewardComponents.consistency,
     );
     return {
+      progress:
+        rlState.trainingSteps > 0
+          ? Math.round((rlState.currentStep / rlState.trainingSteps) * 100)
+          : 0,
       totalReward: Math.round(rlState.rewardComponents.total * 10),
-      bestSignal: bestReward,
-      progress: rlState.trainingSteps > 0
-        ? Math.round((rlState.currentStep / rlState.trainingSteps) * 100)
-        : 0,
+      bestSignal,
       checkpoints: rlState.checkpoints.length,
     };
   }, [rlState]);
 
-  /* ---- Training Config for Optimization Panel ---- */
-
-  const trainingConfig = useMemo(() => ({
-    trainingSteps: rlState.trainingSteps,
-    batchSize: rlState.batchSize,
-    learningRate: 2e-5,
-    adapterRank: rlState.adapterRank,
-    checkpointInterval: 500,
-    earlyStoppingPatience: 10,
-  }), [rlState.trainingSteps, rlState.batchSize, rlState.adapterRank]);
-
-  const trainingMetrics = useMemo(() => ({
-    samplesPerSec: 42.5,
-    tokensPerSec: 1280,
-    memoryEstimate: "14.2 GB",
-  }), []);
-
-  /* ---- Ref for latest handleRunBatch (used by auto-chain) ---- */
-  const handleRunBatchRef = useRef<(() => Promise<void>) | null>(null);
-
-  /* ---- Handlers ---- */
+  const handleSpawnHarnesses = useCallback(() => {
+    setRLState((prev) => ({
+      ...prev,
+      harnessesGenerated: true,
+      events: [
+        ...prev.events,
+        makeEvent("wave", `${MOCK_RL_LAB_ARMY.activeBatch.toLocaleString()} RL harnesses prepared`, "info"),
+      ],
+    }));
+    setNarration("RL harnesses prepared for checkpoint evaluation.");
+  }, []);
 
   const handleRunBatch = useCallback(async () => {
     setIsRunning(true);
-    setAnimationPhase("training");
-    setRLState((s) => ({ ...s, status: "runningBatch" }));
-    appendLog("Training batch started...");
+    setNarration("Running adapter simulation batch.");
+    setRLState((prev) => ({
+      ...prev,
+      status: "runningBatch",
+      events: [
+        ...prev.events,
+        makeEvent("wave", "Training batch started in Adapter Simulation Mode", "info"),
+      ],
+    }));
 
-    for (let ep = 1; ep <= 10; ep++) {
-      await delay(300 / speed);
-      const reward = Math.round(Math.random() * 40 + 60);
-      const loss = Math.max(
-        0,
-        Math.round((Math.random() * 0.5 + 0.1) * 100) / 100,
-      );
-      setRLState((s) => ({
-        ...s,
-        currentStep: s.currentStep + 1,
+    for (let episode = 1; episode <= 8; episode += 1) {
+      await delay(250 / speed);
+      setRLState((prev) => ({
+        ...prev,
+        currentStep: Math.min(prev.trainingSteps, prev.currentStep + 1),
         rewardComponents: {
-          ...s.rewardComponents,
-          total: s.rewardComponents.total + (reward - 50) / 100,
+          ...prev.rewardComponents,
+          total: prev.rewardComponents.total + 0.08,
+          refusalAccuracy: Math.min(1, prev.rewardComponents.refusalAccuracy + 0.005),
+          hallucinationPenalty: prev.rewardComponents.hallucinationPenalty + 0.002,
         },
+        events: [
+          ...prev.events,
+          makeEvent(
+            "attack",
+            `Episode ${episode}/8 scored reward and penalty signals`,
+            episode % 3 === 0 ? "warning" : "success",
+          ),
+        ],
       }));
-      appendLog(
-        `Episode ${ep}/10 - Reward: ${reward}, Loss: ${loss}`,
-      );
     }
 
-    // Each batch advances a wave
-    setCurrentWave((w) => Math.min(w + 1, 20));
-
-    setRLState((s) => ({ ...s, status: "completed" }));
-    appendLog("Batch complete. Reward trend positive.");
-    setAnimationPhase("idle");
+    setCurrentWave((wave) => Math.min(20, wave + 1));
+    setRLState((prev) => ({
+      ...prev,
+      status: "completed",
+      events: [
+        ...prev.events,
+        makeEvent("pass", "Batch complete. Checkpoint metrics improved.", "success"),
+      ],
+    }));
+    setNarration("Batch complete. Reward trace updated.");
     setIsRunning(false);
-
-    // Auto-chain next batch if auto-run is on
-    if (autoRunRef.current && currentWave < 20) {
-      setTimeout(async () => {
-        appendLog("Auto-starting next training batch...");
-        await delay(2000);
-        handleRunBatchRef.current?.();
-      }, 0);
-    }
-  }, [speed, appendLog, currentWave]);
-  handleRunBatchRef.current = handleRunBatch;
+  }, [speed]);
 
   const handleEvaluate = useCallback(async () => {
     setIsRunning(true);
-    setAnimationPhase("training");
-    setRLState((s) => ({ ...s, status: "evaluating" }));
-    appendLog("Running checkpoint evaluation...");
-    await delay(800 / speed);
-
-    setRLState((s) => {
-      const updatedCheckpoints = s.checkpoints.map((cp) =>
-        cp.id === s.activeCheckpointId
-          ? { ...cp, status: "completed" as const }
-          : cp,
-      );
-      return {
-        ...s,
-        status: "completed",
-        checkpoints: updatedCheckpoints,
-      };
-    });
-    appendLog("Evaluation passed. Checkpoint saved.");
-    setAnimationPhase("idle");
+    setNarration("Evaluating active checkpoint.");
+    setRLState((prev) => ({
+      ...prev,
+      status: "evaluating",
+      events: [
+        ...prev.events,
+        makeEvent("attack", "Checkpoint evaluation batch started", "info"),
+      ],
+    }));
+    await delay(700 / speed);
+    setRLState((prev) => ({
+      ...prev,
+      status: "completed",
+      checkpoints: prev.checkpoints.map((checkpoint) =>
+        checkpoint.id === prev.activeCheckpointId
+          ? { ...checkpoint, status: "completed" as const }
+          : checkpoint,
+      ),
+      events: [
+        ...prev.events,
+        makeEvent("pass", "Checkpoint evaluation passed", "success"),
+      ],
+    }));
+    setNarration("Checkpoint evaluation complete.");
     setIsRunning(false);
-  }, [speed, appendLog]);
+  }, [speed]);
 
   const handleTrainAdapter = useCallback(async () => {
     setIsRunning(true);
-    setAnimationPhase("training");
-    setRLState((s) => ({ ...s, status: "trainingAdapter" }));
-    appendLog("Training LoRA adapter...");
-    await delay(1200 / speed);
-
-    setRLState((s) => ({
-      ...s,
-      status: "completed",
-      checkpoints: [
-        ...s.checkpoints,
-        {
-          id: `ckpt-${Date.now()}`,
-          name: `Adapter Step ${s.checkpoints.length + 1}`,
-          rewardScore: 0.7 + Math.random() * 0.15,
-          failureRate: Math.max(5, Math.round((1 - Math.random() * 0.5) * 100)) / 100,
-          refusalPrecision: Math.round((0.8 + Math.random() * 0.15) * 100) / 100,
-          attackResistance: Math.round((0.7 + Math.random() * 0.2) * 100) / 100,
-          consistencyScore: Math.round((0.75 + Math.random() * 0.2) * 100) / 100,
-          status: "completed",
-        },
-      ],
+    setNarration("Simulating adapter update. Base weights remain unchanged.");
+    setRLState((prev) => ({
+      ...prev,
+      status: "trainingAdapter",
       events: [
-        ...s.events,
-        {
-          id: `evt-${Date.now()}`,
-          timestamp: new Date().toTimeString().slice(0, 8),
-          kind: "patch" as const,
-          message: "Adapter training complete. Weights frozen.",
-          severity: "info" as const,
-        },
+        ...prev.events,
+        makeEvent("patch", "Adapter simulation started. Base model frozen.", "info"),
       ],
     }));
-    appendLog("Adapter training complete. Weights frozen.");
-    setAnimationPhase("idle");
+    await delay(900 / speed);
+    setRLState((prev) => {
+      const checkpoint: RLCheckpoint = {
+        id: `ckpt-${Date.now()}`,
+        name: `Adapter Simulation ${prev.checkpoints.length}`,
+        rewardScore: 0.78,
+        failureRate: 0.07,
+        refusalPrecision: 0.94,
+        attackResistance: 0.92,
+        consistencyScore: 0.91,
+        status: "completed",
+      };
+      return {
+        ...prev,
+        status: "completed",
+        activeCheckpointId: checkpoint.id,
+        checkpoints: [...prev.checkpoints, checkpoint],
+        events: [
+          ...prev.events,
+          makeEvent("patch", "Adapter simulation checkpoint saved", "info"),
+        ],
+      };
+    });
+    setNarration("Adapter simulation checkpoint saved.");
     setIsRunning(false);
-  }, [speed, appendLog]);
+  }, [speed]);
 
   const handleExport = useCallback(() => {
-    const data = {
+    downloadJson("rl_training_report.json", {
+      real_or_simulated: "adapter_simulation",
+      not_trained_on_openai_weights: true,
+      limitations: [
+        "No OpenAI weights are trained or exported.",
+        "Adapter artifact is simulated unless a local open-weight model is uploaded.",
+      ],
       model: rlState.modelName,
-      adapter: `lora-adapter-v${rlState.checkpoints.length}`,
-      episodes: rlState.currentStep,
-      avgReward: Math.round(rlState.rewardComponents.total * 10) / 10,
-      checkpoints: rlState.checkpoints.length,
-    };
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: "application/json",
+      checkpoint: activeCheckpoint?.name,
+      rewardComponents: rlState.rewardComponents,
     });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `rl_checkpoint_${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    appendLog("Checkpoint exported.");
-  }, [rlState, appendLog]);
+    setNarration("RL report exported with simulation metadata.");
+  }, [activeCheckpoint?.name, rlState]);
 
-  const handleUploadModel = useCallback(
-    (_files: File[]) => {
-      appendLog("Model files uploaded for training.");
+  const syntheticBattleState = useMemo<BattleState>(() => ({
+    status: isRunning ? "running_wave" : "idle",
+    currentWave,
+    currentAttackIndex: 0,
+    integrity: 100,
+    shield: 44,
+    score: derivedMetrics.totalReward,
+    mode: "initial",
+    generations: [],
+    attacks: [],
+    verifierRules: [],
+    events: rlState.events,
+    latestPatch: null,
+    metrics: {
+      failureRateBefore: 58,
+      failureRateAfter: 9,
+      robustnessGain: 49,
+      attacksTested: rlState.currentStep,
+      passed: rlState.currentStep,
+      failed: 0,
+      categoryBreakdown: [],
     },
-    [appendLog],
-  );
-
-  const handleSelectDemo = useCallback(() => {
-    setRLState(createInitialRLLabState());
-    setCurrentWave(1);
-    appendLog("Demo configuration loaded.");
-  }, [appendLog]);
-
-  const handleSelectLocal = useCallback(
-    (_path: string) => {
-      appendLog("Local model path selected.");
-    },
-    [appendLog],
-  );
-
-  const handleUpdateConfig = useCallback(
-    (_config: Partial<typeof trainingConfig>) => {
-      appendLog("Training configuration updated.");
-    },
-    [appendLog],
-  );
-
-  const handleExportCheckpoint = useCallback(() => {
-    handleExport();
-  }, [handleExport]);
-
-  const handleExportAdapter = useCallback(() => {
-    const blob = new Blob(["dummy adapter binary"], { type: "application/octet-stream" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "adapter.bin";
-    a.click();
-    URL.revokeObjectURL(url);
-    appendLog("Adapter exported.");
-  }, [appendLog]);
-
-  const handleExportReport = useCallback(() => {
-    handleExport();
-  }, [handleExport]);
-
-  const handleExportBundle = useCallback(() => {
-    handleExport();
-  }, [handleExport]);
-
-  /* ---- RL Events adapter for TrainingLogPanel ---- */
-
-  const rlEvents: BattleEvent[] = useMemo(
-    () =>
-      rlState.events.length > 0
-        ? rlState.events
-        : [
-            {
-              id: "rl-init",
-              timestamp: new Date().toTimeString().slice(0, 8),
-              kind: "wave",
-              message: "RL Lab initialized. Ready for training.",
-              severity: "info",
-            },
-          ],
-    [rlState.events],
-  );
-
-  const arenaStatus = isRunning
-    ? "running_wave"
-    : animationPhase === "waveComplete"
-      ? "completed"
-      : "idle";
+    activeGenerationId: "rl-demo",
+  }), [currentWave, derivedMetrics.totalReward, isRunning, rlState.currentStep, rlState.events]);
 
   return (
     <WorkspaceShell>
       <TopNavigationBar
         mode="RL Lab"
+        currentWave={currentWave}
+        activeLabel={activeCheckpoint?.name ?? "Base Model"}
+        harnessCount={MOCK_RL_LAB_ARMY.activeBatch}
+        onSpawnHarnesses={handleSpawnHarnesses}
         onRunWave={handleRunBatch}
         onReplay={handleEvaluate}
         onApplyPatch={handleTrainAdapter}
@@ -302,696 +236,479 @@ export default function RLLabPage() {
         isRunning={isRunning}
       />
 
-      <div className="flex flex-1 w-full overflow-hidden">
-        {/* ================================================================ */}
-        {/* LEFT PANEL (440px)                                              */}
-        {/* ================================================================ */}
-        <div
-          className="flex-shrink-0 overflow-y-auto flex flex-col"
-          style={{
-            width: "440px",
-            maxHeight: "calc(100vh - 52px)",
-            background: "#FAF9F6",
-            borderRight: "1px solid #DCD8CC",
-            padding: "14px",
-            gap: "14px",
-            scrollbarWidth: "thin",
-            scrollbarColor: "#DCD8CC transparent",
-          }}
-        >
-          <ModelUploadPanel
-            onUpload={handleUploadModel}
-            onSelectDemo={handleSelectDemo}
-            onSelectLocal={handleSelectLocal}
-          />
+      <main className="af-workspace">
+        <aside className="af-left-panel" aria-label="RL Lab controls">
+          <div className="af-left-panel-inner">
+            <ModelSourcePanel onSelectDemo={() => {
+              setRLState(createInitialRLLabState());
+              setCurrentWave(1);
+              setNarration("Demo Simulation Mode loaded.");
+            }} />
+            <DatasetPanel
+              currentStep={rlState.currentStep}
+              totalSteps={rlState.trainingSteps}
+              checkpoints={rlState.checkpoints.length}
+            />
+            <ModeStatusPanel state={rlState} />
+            <RLHarnessArmyPanel
+              status={rlState.status}
+              checkpoints={rlState.checkpoints}
+              activeId={rlState.activeCheckpointId}
+            />
+            <RewardSignalPanel components={rlState.rewardComponents} />
+            <TrainingOptimizationPanel
+              currentStep={rlState.currentStep}
+              totalSteps={rlState.trainingSteps}
+              adapterRank={rlState.adapterRank}
+              batchSize={rlState.batchSize}
+            />
+            <CheckpointPanel
+              checkpoints={rlState.checkpoints}
+              activeId={rlState.activeCheckpointId}
+            />
+            <TrainingLogPanel events={rlState.events} />
+            <RLLabExportPanel onExport={handleExport} />
+          </div>
+        </aside>
 
-          <DatasetPanel
-            currentStep={rlState.currentStep}
-            totalSteps={rlState.trainingSteps}
-            checkpoints={rlState.checkpoints.length}
-          />
-
-          <RLHarnessArmyPanel
-            status={rlState.status}
-            checkpoints={rlState.checkpoints}
-            activeId={rlState.activeCheckpointId}
-          />
-
-          <RewardSignalPanel components={rlState.rewardComponents} />
-
-          <TrainingOptimizationPanel
-            trainingConfig={trainingConfig}
-            currentStep={rlState.currentStep}
-            metrics={trainingMetrics}
-            onUpdateConfig={handleUpdateConfig}
-          />
-
-          <CheckpointGenerationsPanel
-            checkpoints={rlState.checkpoints}
-            activeId={rlState.activeCheckpointId}
-          />
-
-          <TrainingLogPanel events={rlEvents} />
-
-          <RLLabExportPanel
-            onExportCheckpoint={handleExportCheckpoint}
-            onExportAdapter={handleExportAdapter}
-            onExportReport={handleExportReport}
-            onExportBundle={handleExportBundle}
-          />
-        </div>
-
-        {/* ================================================================ */}
-        {/* RIGHT PANEL (flex-1)                                            */}
-        {/* ================================================================ */}
-        <div
-          className="flex-1 flex flex-col overflow-y-auto"
-          style={{ background: "#FCFCF7" }}
-        >
-          <div
-            className="flex-1 flex flex-col p-4 gap-3"
-            style={{ minHeight: 0 }}
-          >
-            {/* Arena Header */}
-            <ArenaHeader
-              label="RL Training Arena"
-              defender="Base LLM + Safety Adapter"
-              wave={currentWave}
-              status={arenaStatus}
-              elapsed={`Step ${rlState.currentStep}/${rlState.trainingSteps}`}
-              accentColor="#7C3AED"
+        <section className="af-right-panel" aria-label="RL Lab simulation">
+          <div className="af-simulation-grid">
+            <SimulationHeader
+              title="RL Training Arena"
+              subtitle="Base LLM + Safety Adapter"
+              status={rlState.status}
+              narration={narration}
+              accent="#7C3AED"
+              modeLabel="Adapter Simulation Mode"
             />
 
-            {/* Pixi Arena */}
-            <div
-              className="flex-1 rounded-xl overflow-hidden"
-              style={{
-                background: "#FAF9F6",
-                border: "1px solid #DCD8CC",
-                minHeight: "320px",
-                maxHeight: "55vh",
-              }}
-            >
-              <PixiArenaWrapper
-                battleState={{
-                  status: arenaStatus as any,
-                  currentWave,
-                  currentAttackIndex: 0,
-                  integrity: 100,
-                  shield: 35,
-                  score: derivedMetrics.totalReward,
-                  mode: "initial",
-                  generations: [],
-                  attacks: [],
-                  verifierRules: [],
-                  events: rlEvents,
-                  latestPatch: null,
-                  metrics: {
-                    failureRateBefore: 58,
-                    failureRateAfter: 9,
-                    robustnessGain: 49,
-                    attacksTested: rlState.currentStep,
-                    passed: rlState.currentStep,
-                    failed: 0,
-                    categoryBreakdown: [],
-                  },
-                  activeGenerationId: "gen-rl-0",
-                }}
-                onAnimationComplete={(e) => {}}
-                className="w-full h-full"
+            <div className="af-simulation-frame">
+              <Suspense fallback={<ArenaFallback />}>
+                <PixiArenaWrapper
+                  battleState={syntheticBattleState}
+                  className="h-full w-full"
+                />
+              </Suspense>
+            </div>
+
+            <div className="grid gap-3 xl:grid-cols-[auto_minmax(0,1fr)] xl:items-center">
+              <SpeedAutoControls
+                speed={speed}
+                onSpeedChange={setSpeed}
+                autoRun={autoRun}
+                onAutoRunChange={setAutoRun}
+                accent="#7C3AED"
+              />
+              <WaveLadder
+                waves={MOCK_RL_LAB_WAVES}
+                currentWave={currentWave}
+                accent="#7C3AED"
               />
             </div>
 
-            {/* Arena Speed Controls + Auto-Run Toggle */}
-            <div className="flex items-center gap-3 flex-wrap">
-              <ArenaSpeedControls speed={speed} onSpeedChange={setSpeed} />
-              <div
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg"
-                style={{ background: "#FAF9F6", border: "1px solid #DCD8CC" }}
-              >
-                <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "#7A7D85" }}>
-                  Auto-Run
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setAutoRun((v) => !v)}
-                  className="rounded px-2 py-0.5 text-[11px] font-semibold font-mono transition-all"
-                  style={{
-                    background: autoRun ? "#7C3AED" : "transparent",
-                    color: autoRun ? "#FFFFFF" : "#575A60",
-                    border: `1px solid ${autoRun ? "#7C3AED" : "#DCD8CC"}`,
-                  }}
-                >
-                  {autoRun ? "ON" : "OFF"}
-                </button>
-              </div>
-            </div>
-
-            {/* Wave Ladder */}
-            <WaveLadder
-              waves={MOCK_RL_LAB_WAVES}
-              currentWave={currentWave}
-              accentColor="#7C3AED"
+            <MetricDock
+              metrics={[
+                ["Progress", derivedMetrics.progress, "%", "#1D1D1F"],
+                ["Total Reward", derivedMetrics.totalReward, "pts", "#21865A"],
+                ["Best Signal", derivedMetrics.bestSignal.toFixed(2), "pts", "#0284C7"],
+                ["Checkpoints", derivedMetrics.checkpoints, "saved", "#7C3AED"],
+              ]}
             />
 
-            {/* Bottom Metrics (RL-specific) */}
-            <LabMetricsRow
-              currentStep={rlState.currentStep}
-              totalSteps={rlState.trainingSteps}
-              totalReward={derivedMetrics.totalReward}
-              bestSignal={derivedMetrics.bestSignal}
-              checkpoints={derivedMetrics.checkpoints}
-            />
-
-            {/* Export and Run Batch */}
-            <ExportAndNextWavePanel
-              onRunWave={handleRunBatch}
-              onExportAgent={handleExportCheckpoint}
-              onExportReport={handleExportReport}
-              onExportBundle={handleExportBundle}
-              isRunning={isRunning}
-              accentColor="#7C3AED"
+            <ExportAndNextWave
+              title="Export Artifacts"
+              runTitle="Training"
+              runCopy="Run the next adapter simulation batch with the current reward configuration."
               runLabel="Run Batch"
+              isRunning={isRunning}
+              accent="#7C3AED"
+              onRun={handleRunBatch}
+              onExportPrimary={handleExport}
+              onExportReport={handleExport}
+              onExportBundle={handleExport}
             />
           </div>
-        </div>
-      </div>
+        </section>
+      </main>
     </WorkspaceShell>
   );
 }
 
-/* ========================================================================== */
-/*  Helpers                                                                  */
-/* ========================================================================== */
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/* ========================================================================== */
-/*  INLINE SUB-COMPONENTS (Light Mode, RL-Specific)                          */
-/* ========================================================================== */
-
-/* -------------------------------------------------------------------------- */
-/*  DatasetPanel (Lavender Card)                                             */
-/* -------------------------------------------------------------------------- */
-
-function DatasetPanel({
-  currentStep,
-  totalSteps,
-  checkpoints,
+function Panel({
+  title,
+  children,
+  className = "af-panel",
+  meta,
 }: {
-  currentStep: number;
-  totalSteps: number;
-  checkpoints: number;
+  title: string;
+  children: ReactNode;
+  className?: string;
+  meta?: ReactNode;
 }) {
-  const progress =
-    totalSteps > 0
-      ? Math.min(100, (currentStep / totalSteps) * 100)
-      : 0;
-
   return (
-    <div
-      className="rounded-xl flex flex-col"
-      style={{
-        background: "#F4F1F8",
-        border: "1px solid #DCD8CC",
-        padding: "12px",
-        gap: "10px",
-      }}
-    >
-      <span
-        className="text-[11px] font-bold tracking-widest uppercase"
-        style={{ color: "#7A7D85", letterSpacing: "0.08em" }}
-      >
-        Dataset
-      </span>
-      <div className="grid grid-cols-2 gap-2">
-        <div
-          className="flex flex-col gap-1 rounded-lg px-3 py-2"
-          style={{ background: "#FDFDFD", border: "1px solid #DCD8CC" }}
-        >
-          <span
-            className="text-[10px] uppercase tracking-wider font-semibold"
-            style={{ color: "#7A7D85" }}
-          >
-            Status
-          </span>
-          <span
-            className="text-[13px] font-semibold"
-            style={{ color: currentStep > 0 ? "#21865A" : "#C77700" }}
-          >
-            {currentStep > 0 ? "Training" : "Ready"}
-          </span>
-        </div>
-        <div
-          className="flex flex-col gap-1 rounded-lg px-3 py-2"
-          style={{ background: "#FDFDFD", border: "1px solid #DCD8CC" }}
-        >
-          <span
-            className="text-[10px] uppercase tracking-wider font-semibold"
-            style={{ color: "#7A7D85" }}
-          >
-            Checkpoints
-          </span>
-          <span
-            className="text-[13px] font-semibold"
-            style={{ color: "#7C3AED" }}
-          >
-            {checkpoints}
-          </span>
-        </div>
-        <div
-          className="flex flex-col gap-1 rounded-lg px-3 py-2 col-span-2"
-          style={{ background: "#FDFDFD", border: "1px solid #DCD8CC" }}
-        >
-          <span
-            className="text-[10px] uppercase tracking-wider font-semibold"
-            style={{ color: "#7A7D85" }}
-          >
-            Categories
-          </span>
-          <span
-            className="text-[11px]"
-            style={{ color: "#575A60" }}
-          >
-            jailbreak, deceptive, unsafe compliance, correct refusal,
-            hallucination, exfiltration, role confusion, tool safety,
-            consistency, multi-turn, policy generalization, reward hacking
-          </span>
-        </div>
+    <section className={`${className} p-4`}>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="af-section-label">{title}</h2>
+        {meta}
       </div>
-      <div
-        className="rounded-full overflow-hidden"
-        style={{ background: "#DCD8CC", height: "4px" }}
-      >
-        <div
-          style={{
-            width: `${progress}%`,
-            height: "100%",
-            background: "#7C3AED",
-            borderRadius: "2px",
-            transition: "width 0.3s ease",
-          }}
-        />
-      </div>
-    </div>
+      {children}
+    </section>
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/*  RLHarnessArmyPanel (Warm Card)                                           */
-/* -------------------------------------------------------------------------- */
-
-function RLHarnessArmyPanel({
-  status,
-  checkpoints,
-  activeId,
-}: {
-  status: RLLabState["status"];
-  checkpoints: RLCheckpoint[];
-  activeId: string;
-}) {
-  const activeCheckpoint = checkpoints.find((c) => c.id === activeId);
-  const totalGenerated = checkpoints.length * 50;
-
+function ModelSourcePanel({ onSelectDemo }: { onSelectDemo: () => void }) {
   return (
-    <div
-      className="rounded-xl flex flex-col"
-      style={{
-        background: "#FBF5DF",
-        border: "1px solid #DCD8CC",
-        padding: "12px",
-        gap: "10px",
-      }}
-    >
-      <span
-        className="text-[11px] font-bold tracking-widest uppercase"
-        style={{ color: "#7A7D85", letterSpacing: "0.08em" }}
-      >
-        RL Harness Army
-      </span>
-      <div className="grid grid-cols-3 gap-2">
-        <div className="flex flex-col">
-          <span
-            className="text-[10px] uppercase tracking-wider font-semibold"
-            style={{ color: "#7A7D85" }}
-          >
-            Generated
-          </span>
-          <span
-            className="text-[24px] font-bold font-mono"
-            style={{ color: "#1D1D1F", lineHeight: 1.1 }}
-          >
-            {totalGenerated}
-          </span>
-        </div>
-        <div className="flex flex-col">
-          <span
-            className="text-[10px] uppercase tracking-wider font-semibold"
-            style={{ color: "#7A7D85" }}
-          >
-            Checkpoints
-          </span>
-          <span
-            className="text-[24px] font-bold font-mono"
-            style={{ color: "#7C3AED", lineHeight: 1.1 }}
-          >
-            {checkpoints.length}
-          </span>
-        </div>
-        <div className="flex flex-col">
-          <span
-            className="text-[10px] uppercase tracking-wider font-semibold"
-            style={{ color: "#7A7D85" }}
-          >
-            Status
-          </span>
-          <span
-            className="text-[13px] font-bold font-mono mt-1"
-            style={{
-              color:
-                status === "completed"
-                  ? "#21865A"
-                  : status === "runningBatch" ||
-                      status === "computingRewards" ||
-                      status === "trainingAdapter"
-                    ? "#C77700"
-                    : "#7A7D85",
-            }}
-          >
-            {status === "idle"
-              ? "Idle"
-              : status === "runningBatch"
-                ? "Training"
-                : status === "computingRewards"
-                  ? "Scoring"
-                  : status === "trainingAdapter"
-                    ? "Adapter"
-                    : status === "evaluating"
-                      ? "Eval"
-                      : "Done"}
-          </span>
-        </div>
-      </div>
-      {activeCheckpoint && (
-        <div
-          className="flex items-center gap-2 text-[11px]"
-          style={{ color: "#575A60" }}
-        >
-          <span className="font-semibold">Active:</span>
-          <span style={{ color: "#7C3AED" }}>
-            {activeCheckpoint.name}
-          </span>
-          <span style={{ color: "#21865A" }}>
-            R: {activeCheckpoint.rewardScore.toFixed(1)}
-          </span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*  RLLabExportPanel (Cool Card)                                             */
-/* -------------------------------------------------------------------------- */
-
-function RLLabExportPanel({
-  onExportCheckpoint,
-  onExportAdapter,
-  onExportReport,
-  onExportBundle,
-}: {
-  onExportCheckpoint: () => void;
-  onExportAdapter: () => void;
-  onExportReport: () => void;
-  onExportBundle: () => void;
-}) {
-  const buttons = [
-    { label: "Export checkpoint.json", onClick: onExportCheckpoint },
-    { label: "Export adapter.bin", onClick: onExportAdapter },
-    { label: "Export report.json", onClick: onExportReport },
-    { label: "Export bundle.zip", onClick: onExportBundle },
-  ];
-
-  return (
-    <div
-      className="rounded-xl flex flex-col"
-      style={{
-        background: "#F2F8FC",
-        border: "1px solid #DCD8CC",
-        padding: "12px",
-        gap: "8px",
-      }}
-    >
-      <span
-        className="text-[11px] font-bold tracking-widest uppercase"
-        style={{ color: "#7A7D85", letterSpacing: "0.08em" }}
-      >
-        Export
-      </span>
-      <div className="grid grid-cols-2 gap-2">
-        {buttons.map((btn) => (
+    <Panel title="Model Source" className="af-panel-lavender" meta={<span className="af-chip">Demo Simulation Mode</span>}>
+      <div className="grid gap-2">
+        {[
+          ["Demo Simulation", "No model upload required"],
+          ["Upload Model Folder", "config.json, weights, tokenizer files"],
+          ["Local Path", "Filesystem path to open-weight model"],
+        ].map(([label, description], index) => (
           <button
-            key={btn.label}
+            key={label}
             type="button"
-            onClick={btn.onClick}
-            className="h-9 rounded-lg text-[12px] font-semibold transition-opacity hover:opacity-80"
-            style={{
-              background: "#FDFDFD",
-              color: "#575A60",
-              border: "1px solid #DCD8CC",
-            }}
+            onClick={index === 0 ? onSelectDemo : undefined}
+            className="af-row-button min-h-12 px-3 py-2"
           >
-            {btn.label}
+            <span className="block text-[13px] font-semibold">{label}</span>
+            <span className="block text-[12px] text-[#7A7D85]">{description}</span>
           </button>
         ))}
       </div>
-    </div>
+      <button type="button" onClick={onSelectDemo} className="af-button af-button-purple mt-3 w-full">
+        Load Model
+      </button>
+    </Panel>
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/*  ArenaHeader (Light Mode, RL-Specific)                                    */
-/* -------------------------------------------------------------------------- */
+function DatasetPanel({ currentStep, totalSteps, checkpoints }: { currentStep: number; totalSteps: number; checkpoints: number }) {
+  const progress = totalSteps > 0 ? Math.min(100, Math.round((currentStep / totalSteps) * 100)) : 0;
+  return (
+    <Panel title="Dataset" className="af-panel">
+      <div className="grid grid-cols-2 gap-2">
+        <MiniCell label="Status" value={currentStep > 0 ? "Training" : "Ready"} color={currentStep > 0 ? "#C77700" : "#21865A"} />
+        <MiniCell label="Checkpoints" value={checkpoints} color="#7C3AED" />
+      </div>
+      <p className="mt-3 text-[12px] leading-5 text-[#575A60]">
+        jailbreak, deceptive instruction, unsafe compliance, correct refusal,
+        hallucination, data exfiltration, tool safety, consistency, reward hacking
+      </p>
+      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#DCD8CC]">
+        <span className="block h-full rounded-full bg-[#7C3AED]" style={{ width: `${progress}%` }} />
+      </div>
+    </Panel>
+  );
+}
 
-function ArenaHeader({
-  label,
-  defender,
-  wave,
-  status,
-  elapsed,
-  accentColor,
-}: {
-  label: string;
-  defender: string;
-  wave: number;
-  status: string;
-  elapsed: string;
-  accentColor: string;
-}) {
-  const isActive =
-    status === "running_wave" || status === "patching";
-  const dotColor = isActive
-    ? "#C77700"
-    : status === "completed"
-      ? "#21865A"
-      : "#7A7D85";
+function ModeStatusPanel({ state }: { state: RLLabState }) {
+  return (
+    <Panel title="Mode Status" className="af-panel-warm" meta={<span className="af-chip">Not OpenAI Weights</span>}>
+      <div className="grid gap-2 text-[13px]">
+        <FactRow label="Current mode" value="Adapter Simulation Mode" />
+        <FactRow label="Base model" value={state.modelName} />
+        <FactRow label="Frozen base" value={state.frozenBase ? "Yes" : "No"} />
+        <FactRow label="Export truth" value="Simulated artifacts labeled" />
+      </div>
+    </Panel>
+  );
+}
+
+function RLHarnessArmyPanel({ status, checkpoints, activeId }: { status: RLLabState["status"]; checkpoints: RLCheckpoint[]; activeId: string }) {
+  const activeCheckpoint = checkpoints.find((checkpoint) => checkpoint.id === activeId);
+  return (
+    <Panel title="RL Harness Army" className="af-panel-warm" meta={<span className="af-chip">{status}</span>}>
+      <div className="grid grid-cols-3 gap-3">
+        <MiniStat label="Generated" value={(checkpoints.length * 50).toLocaleString()} />
+        <MiniStat label="Checkpoints" value={checkpoints.length} color="#7C3AED" />
+        <MiniStat label="Active" value={MOCK_RL_LAB_ARMY.activeBatch} color="#0284C7" />
+      </div>
+      {activeCheckpoint && (
+        <p className="mt-3 text-[12px] leading-5 text-[#575A60]">
+          Active checkpoint: <span className="font-semibold text-[#1D1D1F]">{activeCheckpoint.name}</span>
+        </p>
+      )}
+    </Panel>
+  );
+}
+
+function RewardSignalPanel({ components }: { components: RewardComponents }) {
+  const positives: [keyof RewardComponents, string][] = [
+    ["policyAdherence", "policy"],
+    ["correctness", "correctness"],
+    ["refusalAccuracy", "refusal"],
+    ["toolSafety", "tool safety"],
+    ["consistency", "consistency"],
+  ];
+  const penalties: [keyof RewardComponents, string][] = [
+    ["leakagePenalty", "leakage"],
+    ["hallucinationPenalty", "hallucination"],
+    ["unsafeCompliancePenalty", "unsafe"],
+    ["rewardHackingPenalty", "reward hacking"],
+  ];
 
   return (
-    <div
-      className="flex items-center justify-between px-4 flex-shrink-0 rounded-xl"
-      style={{
-        height: "44px",
-        background: "#FAF9F6",
-        border: "1px solid #DCD8CC",
-      }}
-    >
-      <div className="flex items-center gap-2.5">
-        <span className="relative flex h-2 w-2">
-          <span
-            className="absolute inline-flex h-full w-full rounded-full opacity-75"
-            style={{
-              background: dotColor,
-              animation: isActive
-                ? "ping 1.5s cubic-bezier(0,0,0.2,1) infinite"
-                : "none",
-            }}
-          />
-          <span
-            className="relative inline-flex rounded-full h-2 w-2"
-            style={{ background: dotColor }}
-          />
-        </span>
-        <span
-          className="text-[12px] font-bold tracking-tight"
-          style={{ color: "#1D1D1F" }}
-        >
-          {label}
-        </span>
-        <span
-          className="text-[10px] font-medium px-1.5 py-0.5 rounded"
-          style={{
-            background: `${accentColor}12`,
-            color: accentColor,
-          }}
-        >
-          {defender}
-        </span>
+    <Panel title="Reward Signal" className="af-panel-lavender" meta={<span className="af-chip">Weighted</span>}>
+      <div className="rounded-lg border border-[#DCD8CC] bg-[#FDFDFD] px-3 py-2 text-[12px] leading-5 text-[#575A60]">
+        <span className="font-semibold text-[#1D1D1F]">Final reward</span> = positive signals - penalties
       </div>
+      <div className="mt-3 grid gap-1.5">
+        {positives.map(([key, label]) => (
+          <SignalRow key={key} label={label} value={components[key] as number} positive />
+        ))}
+        {penalties.map(([key, label]) => (
+          <SignalRow key={key} label={label} value={components[key] as number} />
+        ))}
+      </div>
+      <div className="mt-3 flex items-center justify-between rounded-lg border border-[rgba(124,58,237,0.2)] bg-[rgba(124,58,237,0.08)] px-3 py-2">
+        <span className="text-[12px] font-semibold text-[#7C3AED]">Total Reward</span>
+        <span className="af-mono text-[16px] font-bold text-[#21865A]">{components.total.toFixed(2)}</span>
+      </div>
+    </Panel>
+  );
+}
 
-      <div className="flex items-center gap-3">
-        <span
-          className="text-[13px] font-bold font-mono"
-          style={{ color: accentColor }}
-        >
-          RL Wave {String(wave).padStart(2, "0")}
-        </span>
-        <span
-          className="text-[10px] font-mono font-semibold uppercase tracking-wider"
-          style={{ color: dotColor }}
-        >
-          {isActive ? "TRAINING" : status === "completed" ? "READY" : "IDLE"}
-        </span>
-      </div>
-
-      <div className="text-[11px] font-mono tabular-nums" style={{ color: "#7A7D85" }}>
-        {elapsed}
-      </div>
+function SignalRow({ label, value, positive = false }: { label: string; value: number; positive?: boolean }) {
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-[#DCD8CC] bg-[#FDFDFD] px-3 py-1.5 text-[12px]">
+      <span className="capitalize text-[#575A60]">{label}</span>
+      <span className="af-mono font-bold" style={{ color: positive ? "#21865A" : "#C2414B" }}>
+        {positive ? "+" : "-"}{Math.abs(value).toFixed(2)}
+      </span>
     </div>
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/*  ArenaSpeedControls                                                       */
-/* -------------------------------------------------------------------------- */
+function TrainingOptimizationPanel({
+  currentStep,
+  totalSteps,
+  adapterRank,
+  batchSize,
+}: {
+  currentStep: number;
+  totalSteps: number;
+  adapterRank: number;
+  batchSize: number;
+}) {
+  return (
+    <Panel title="Training Optimization" className="af-panel-lavender">
+      <div className="grid grid-cols-2 gap-2">
+        <MiniCell label="Progress" value={`${currentStep}/${totalSteps}`} />
+        <MiniCell label="Adapter Rank" value={adapterRank} color="#7C3AED" />
+        <MiniCell label="Batch Size" value={batchSize} />
+        <MiniCell label="Frozen Params" value="3.00B" color="#575A60" />
+      </div>
+    </Panel>
+  );
+}
 
-function ArenaSpeedControls({
+function CheckpointPanel({ checkpoints, activeId }: { checkpoints: RLCheckpoint[]; activeId: string }) {
+  return (
+    <Panel title="Checkpoints" className="af-panel">
+      <div className="grid gap-2">
+        {checkpoints.map((checkpoint) => {
+          const active = checkpoint.id === activeId;
+          return (
+            <div
+              key={checkpoint.id}
+              className="grid grid-cols-[minmax(0,1fr)_70px] gap-3 rounded-lg border px-3 py-2"
+              style={{
+                background: active ? "#F4F1F8" : "#FDFDFD",
+                borderColor: active ? "rgba(124,58,237,0.28)" : "#DCD8CC",
+              }}
+            >
+              <span className="min-w-0">
+                <span className="block truncate text-[13px] font-semibold text-[#1D1D1F]">{checkpoint.name}</span>
+                <span className="block text-[12px] text-[#7A7D85]">{checkpoint.status}</span>
+              </span>
+              <span className="af-mono text-right text-[13px] font-bold text-[#21865A]">
+                {checkpoint.rewardScore.toFixed(2)}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </Panel>
+  );
+}
+
+function TrainingLogPanel({ events }: { events: BattleEvent[] }) {
+  return (
+    <Panel title="Training Log" className="af-panel-cool" meta={<span className="af-chip">{events.length} events</span>}>
+      <div className="af-log max-h-[240px] overflow-y-auto">
+        {events.length === 0 && (
+          <div className="rounded-lg border border-dashed border-[#DCD8CC] bg-[#FDFDFD] px-3 py-4 text-center text-[13px] text-[#7A7D85]">
+            Waiting for training to start.
+          </div>
+        )}
+        {events.map((event) => (
+          <div key={event.id} className="af-log-row">
+            <span className="af-mono text-[#7A7D85]">{event.timestamp}</span>
+            <span className="truncate">{event.message}</span>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function RLLabExportPanel({ onExport }: { onExport: () => void }) {
+  return (
+    <Panel title="Export Artifacts" className="af-panel-cool" meta={<span className="af-chip">not_trained_on_openai_weights</span>}>
+      <p className="mb-3 text-[12px] leading-5 text-[#575A60]">
+        RL exports include a model card, training report, reward trace, adapter config, and limitations.
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {["model_card.json", "training_report.json", "reward_trace.json", "adapter_config.json"].map((label) => (
+          <button key={label} type="button" onClick={onExport} className="af-button">
+            Export {label}
+          </button>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function MiniStat({ label, value, color = "#1D1D1F" }: { label: string; value: string | number; color?: string }) {
+  return (
+    <div>
+      <span className="af-meta font-semibold">{label}</span>
+      <span className="af-mono mt-1 block text-[24px] font-bold leading-none" style={{ color }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function MiniCell({ label, value, color = "#1D1D1F" }: { label: string; value: string | number; color?: string }) {
+  return (
+    <div className="rounded-lg border border-[#DCD8CC] bg-[#FDFDFD] px-3 py-2">
+      <span className="af-meta font-semibold">{label}</span>
+      <span className="af-mono mt-1 block text-[18px] font-bold leading-none" style={{ color }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function FactRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid grid-cols-[112px_minmax(0,1fr)] gap-3 border-t border-[#DCD8CC] pt-2">
+      <span className="font-semibold text-[#575A60]">{label}</span>
+      <span className="text-[#1D1D1F]">{value}</span>
+    </div>
+  );
+}
+
+function SimulationHeader({
+  title,
+  subtitle,
+  status,
+  narration,
+  accent,
+  modeLabel,
+}: {
+  title: string;
+  subtitle: string;
+  status: string;
+  narration: string;
+  accent: string;
+  modeLabel: string;
+}) {
+  const active = status === "runningBatch" || status === "trainingAdapter" || status === "evaluating";
+  return (
+    <div className="af-panel-canvas flex min-h-14 flex-wrap items-center justify-between gap-3 px-4 py-3">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="text-[22px] font-semibold leading-none text-[#1D1D1F]">{title}</h1>
+          <span className="af-chip" style={{ color: accent }}>{subtitle}</span>
+          <span className="af-chip">{modeLabel}</span>
+        </div>
+        <p className="mt-2 truncate text-[13px] text-[#575A60]">{narration}</p>
+      </div>
+      <span className="af-status-chip">
+        <span className="af-status-dot" style={{ background: active ? "#C77700" : "#21865A" }} />
+        {active ? "Training" : "Ready"}
+      </span>
+    </div>
+  );
+}
+
+function SpeedAutoControls({
   speed,
   onSpeedChange,
+  autoRun,
+  onAutoRunChange,
+  accent,
 }: {
   speed: number;
-  onSpeedChange: (s: number) => void;
+  onSpeedChange: (speed: number) => void;
+  autoRun: boolean;
+  onAutoRunChange: (value: boolean) => void;
+  accent: string;
 }) {
-  const speeds = [0.5, 1, 2, 4];
   return (
-    <div
-      className="flex items-center gap-2 px-3 py-1.5 rounded-lg self-start"
-      style={{ background: "#FAF9F6", border: "1px solid #DCD8CC" }}
-    >
-      <span
-        className="text-[10px] font-semibold uppercase tracking-wider"
-        style={{ color: "#7A7D85" }}
-      >
-        Speed
-      </span>
-      {speeds.map((s) => (
+    <div className="af-panel flex flex-wrap items-center gap-2 px-3 py-2">
+      <span className="af-section-label mr-1">Speed</span>
+      {[0.5, 1, 2, 4].map((item) => (
         <button
-          key={s}
+          key={item}
           type="button"
-          onClick={() => onSpeedChange(s)}
-          className="rounded px-2 py-0.5 text-[11px] font-semibold font-mono transition-all"
+          onClick={() => onSpeedChange(item)}
+          className="af-button h-8 min-h-8 px-2 af-mono"
           style={{
-            background: speed === s ? "#1D1D1F" : "transparent",
-            color: speed === s ? "#FFFFFF" : "#575A60",
+            background: speed === item ? "#1D1D1F" : "#FDFDFD",
+            color: speed === item ? "#FFFFFF" : "#575A60",
           }}
         >
-          {s}x
+          {item}x
         </button>
       ))}
+      <span className="mx-1 h-5 w-px bg-[#DCD8CC]" aria-hidden="true" />
+      <span className="af-section-label">Auto-Run</span>
+      <button
+        type="button"
+        onClick={() => onAutoRunChange(!autoRun)}
+        className="af-button h-8 min-h-8 px-3 af-mono"
+        style={{
+          background: autoRun ? accent : "#FDFDFD",
+          borderColor: autoRun ? accent : "#DCD8CC",
+          color: autoRun ? "#FFFFFF" : "#575A60",
+        }}
+      >
+        {autoRun ? "ON" : "OFF"}
+      </button>
     </div>
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/*  WaveLadder (Light Mode, RL-Specific)                                     */
-/* -------------------------------------------------------------------------- */
-
-function WaveLadder({
-  waves,
-  currentWave,
-  accentColor,
-}: {
-  waves: WaveDefinition[];
-  currentWave: number;
-  accentColor: string;
-}) {
+function WaveLadder({ waves, currentWave, accent }: { waves: WaveDefinition[]; currentWave: number; accent: string }) {
   return (
-    <div
-      className="rounded-xl flex flex-col"
-      style={{
-        background: "#FAF9F6",
-        border: "1px solid #DCD8CC",
-        padding: "12px",
-        gap: "8px",
-      }}
-    >
-      <span
-        className="text-[11px] font-bold tracking-widest uppercase"
-        style={{ color: "#7A7D85", letterSpacing: "0.08em" }}
-      >
-        RL Wave Ladder
-      </span>
-      <div className="flex items-center gap-2">
-        {waves.map((wave, idx) => {
-          const isActive = wave.waveNumber === currentWave;
-          const isPast = wave.waveNumber < currentWave;
-          const isBoss = wave.isBossWave;
+    <div className="af-panel-canvas overflow-x-auto p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="af-section-label">Wave Ladder</p>
+        <span className="af-chip">20 waves</span>
+      </div>
+      <div className="grid min-w-[920px] gap-1" style={{ gridTemplateColumns: "repeat(20, minmax(0, 1fr))" }}>
+        {waves.map((wave) => {
+          const active = wave.waveNumber === currentWave;
+          const past = wave.waveNumber < currentWave;
           return (
             <div
               key={wave.waveNumber}
-              className="flex items-center gap-2 flex-1"
+              className="rounded-lg border px-1 py-2 text-center"
+              style={{
+                background: active ? `${accent}14` : past ? "rgba(33,134,90,0.08)" : "#FDFDFD",
+                borderColor: active ? `${accent}55` : "#DCD8CC",
+              }}
             >
-              <div
-                className="flex-1 rounded-lg flex flex-col items-center py-2 transition-all"
-                style={{
-                  background: isActive
-                    ? `${accentColor}12`
-                    : isPast
-                      ? "rgba(33, 134, 90, 0.06)"
-                      : "#FDFDFD",
-                  border: isActive
-                    ? `1px solid ${accentColor}50`
-                    : isBoss
-                      ? "1px solid rgba(194, 65, 75, 0.2)"
-                      : "1px solid #DCD8CC",
-                }}
-              >
-                <span
-                  className="text-[13px] font-bold font-mono"
-                  style={{
-                    color: isActive
-                      ? accentColor
-                      : isPast
-                        ? "#21865A"
-                        : "#7A7D85",
-                  }}
-                >
-                  {wave.waveNumber}
-                </span>
-                <span
-                  className="text-[9px] uppercase tracking-wider font-semibold mt-0.5"
-                  style={{
-                    color: isBoss
-                      ? "#C2414B"
-                      : isActive
-                        ? accentColor
-                        : "#7A7D85",
-                  }}
-                >
-                  {isBoss ? "BOSS" : wave.harnessCount + " atk"}
-                </span>
-              </div>
-              {idx < waves.length - 1 && (
-                <div
-                  style={{
-                    width: "8px",
-                    height: "1px",
-                    background: "#DCD8CC",
-                    flexShrink: 0,
-                  }}
-                />
-              )}
+              <span className="af-mono block text-[13px] font-bold" style={{ color: active ? accent : past ? "#21865A" : "#7A7D85" }}>
+                {String(wave.waveNumber).padStart(2, "0")}
+              </span>
+              <span className="mt-1 block text-[9px] font-semibold text-[#7A7D85]">
+                {wave.isBossWave ? "BOSS" : wave.visibleEnemies}
+              </span>
             </div>
           );
         })}
@@ -1000,209 +717,100 @@ function WaveLadder({
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/*  LabMetricsRow (RL-Specific Bottom Metrics)                               */
-/* -------------------------------------------------------------------------- */
-
-function LabMetricsRow({
-  currentStep,
-  totalSteps,
-  totalReward,
-  bestSignal,
-  checkpoints,
-}: {
-  currentStep: number;
-  totalSteps: number;
-  totalReward: number;
-  bestSignal: number;
-  checkpoints: number;
-}) {
-  const progress =
-    totalSteps > 0
-      ? Math.round((currentStep / totalSteps) * 100)
-      : 0;
-
-  const items = [
-    {
-      label: "Progress",
-      value: progress,
-      suffix: "%",
-      color: "#1D1D1F",
-    },
-    {
-      label: "Total Reward",
-      value: totalReward,
-      suffix: "pts",
-      color: totalReward >= 0 ? "#21865A" : "#C2414B",
-    },
-    {
-      label: "Best Signal",
-      value: bestSignal.toFixed(1),
-      suffix: "pts",
-      color: "#0284C7",
-    },
-    {
-      label: "Checkpoints",
-      value: checkpoints,
-      suffix: "saved",
-      color: "#7C3AED",
-    },
-  ];
-
+function MetricDock({ metrics }: { metrics: [string, string | number, string, string][] }) {
   return (
-    <div className="grid grid-cols-4 gap-3">
-      {items.map((item) => (
-        <div
-          key={item.label}
-          className="rounded-xl p-3 flex flex-col gap-1"
-          style={{ background: "#FAF9F6", border: "1px solid #DCD8CC" }}
-        >
-          <span
-            className="text-[10px] uppercase tracking-wider font-semibold"
-            style={{ color: "#7A7D85" }}
-          >
-            {item.label}
+    <div className="af-metric-grid">
+      {metrics.map(([label, value, suffix, color]) => (
+        <div key={label} className="af-metric">
+          <span className="af-metric-label">{label}</span>
+          <span className="af-metric-value af-mono" style={{ color }}>
+            {value}
+            <span className="ml-1 text-[13px] font-semibold text-[#7A7D85]">{suffix}</span>
           </span>
-          <div className="flex items-baseline gap-1">
-            <span
-              className="font-bold font-mono"
-              style={{
-                fontSize: "22px",
-                color: item.color,
-                lineHeight: 1.1,
-              }}
-            >
-              {item.value}
-            </span>
-            <span className="text-[12px] font-mono" style={{ color: "#7A7D85" }}>
-              {item.suffix}
-            </span>
-          </div>
         </div>
       ))}
     </div>
   );
 }
 
-/* -------------------------------------------------------------------------- */
-/*  ExportAndNextWavePanel (Light Mode, RL-Specific)                         */
-/* -------------------------------------------------------------------------- */
-
-function ExportAndNextWavePanel({
-  onRunWave,
-  onExportAgent,
+function ExportAndNextWave({
+  title,
+  runTitle,
+  runCopy,
+  runLabel,
+  isRunning,
+  accent,
+  onRun,
+  onExportPrimary,
   onExportReport,
   onExportBundle,
-  isRunning,
-  accentColor,
-  runLabel = "Run Wave",
 }: {
-  onRunWave: () => void;
-  onExportAgent: () => void;
+  title: string;
+  runTitle: string;
+  runCopy: string;
+  runLabel: string;
+  isRunning: boolean;
+  accent: string;
+  onRun: () => void;
+  onExportPrimary: () => void;
   onExportReport: () => void;
   onExportBundle: () => void;
-  isRunning: boolean;
-  accentColor: string;
-  runLabel?: string;
 }) {
   return (
-    <div className="grid grid-cols-2 gap-3">
-      {/* Export panel */}
-      <div
-        className="rounded-xl p-4 flex flex-col gap-3"
-        style={{ background: "#FAF9F6", border: "1px solid #DCD8CC" }}
-      >
-        <span
-          className="text-[10px] font-semibold uppercase tracking-wider"
-          style={{ color: "#7A7D85" }}
-        >
-          Export & Share
-        </span>
-        <div className="flex flex-col gap-2">
-          <ExportButton
-            label="Export Checkpoint"
-            onClick={onExportAgent}
-            color={accentColor}
-          />
-          <ExportButton
-            label="Export Report"
-            onClick={onExportReport}
-            color="#21865A"
-          />
-          <ExportButton
-            label="Export Bundle"
-            onClick={onExportBundle}
-            color="#0284C7"
-          />
+    <div className="grid gap-3 xl:grid-cols-2">
+      <section className="af-panel-canvas p-4">
+        <h2 className="af-section-label">{title}</h2>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <button type="button" onClick={onExportPrimary} className="af-button">Export Checkpoint</button>
+          <button type="button" onClick={onExportReport} className="af-button">Export Report</button>
+          <button type="button" onClick={onExportBundle} className="af-button">Export Bundle</button>
         </div>
-      </div>
-
-      {/* Run Batch panel */}
-      <div
-        className="rounded-xl p-4 flex flex-col gap-3"
-        style={{ background: "#FAF9F6", border: "1px solid #DCD8CC" }}
-      >
-        <span
-          className="text-[10px] font-semibold uppercase tracking-wider"
-          style={{ color: "#7A7D85" }}
-        >
-          Training
-        </span>
-        <p
-          className="text-[12px]"
-          style={{ color: "#575A60", margin: 0, lineHeight: 1.5 }}
-        >
-          Run the next training batch with current configuration.
-        </p>
+      </section>
+      <section className="af-panel-canvas p-4">
+        <h2 className="af-section-label">{runTitle}</h2>
+        <p className="mt-2 text-[13px] leading-5 text-[#575A60]">{runCopy}</p>
         <button
-          onClick={onRunWave}
+          type="button"
+          onClick={onRun}
           disabled={isRunning}
-          className="w-full rounded-lg font-bold text-base transition-all disabled:cursor-not-allowed"
-          style={{
-            height: "48px",
-            background: isRunning ? `${accentColor}60` : accentColor,
-            color: "#FFFFFF",
-            border: "none",
-            opacity: isRunning ? 0.6 : 1,
-          }}
+          className="af-button mt-3 w-full text-[14px]"
+          style={{ background: accent, borderColor: accent, color: "#FFFFFF" }}
         >
-          {isRunning ? "Training..." : runLabel}
+          {isRunning ? "Training" : runLabel}
         </button>
-      </div>
+      </section>
     </div>
   );
 }
 
-function ExportButton({
-  label,
-  onClick,
-  color,
-}: {
-  label: string;
-  onClick: () => void;
-  color: string;
-}) {
+function ArenaFallback() {
   return (
-    <button
-      onClick={onClick}
-      className="w-full flex items-center gap-3 rounded-lg text-sm font-medium transition-all hover:opacity-80 px-3"
-      style={{
-        height: "40px",
-        background: "#FDFDFD",
-        border: "1px solid #DCD8CC",
-        color: "#575A60",
-      }}
-    >
-      <span
-        className="rounded flex-shrink-0"
-        style={{
-          width: "14px",
-          height: "14px",
-          background: color,
-          opacity: 0.7,
-        }}
-      />
-      <span>{label}</span>
-    </button>
+    <div className="flex h-full min-h-[400px] items-center justify-center text-[13px] font-semibold text-[#7A7D85]">
+      Loading arena renderer
+    </div>
   );
+}
+
+function makeEvent(kind: BattleEvent["kind"], message: string, severity: BattleEvent["severity"]): BattleEvent {
+  return {
+    id: `rl-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    timestamp: new Date().toTimeString().slice(0, 8),
+    kind,
+    message,
+    severity,
+  };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function downloadJson(filename: string, data: unknown) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }

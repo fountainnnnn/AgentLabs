@@ -1,137 +1,120 @@
-import { useState, useCallback, useRef } from "react";
-import React from "react";
+import { Suspense, lazy, useCallback, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import WorkspaceShell from "@/components/layout/WorkspaceShell";
 import TopNavigationBar from "@/components/layout/TopNavigationBar";
-import AgentSourcePanel from "@/components/agent-hardening/AgentSourcePanel";
-import HarnessArmyPanel from "@/components/agent-hardening/HarnessArmyPanel";
-import AgentExportPanel from "@/components/agent-hardening/AgentExportPanel";
-
-const PixiArenaWrapper = React.lazy(() => import("@/components/arena/PixiArenaWrapper"));
-
 import {
   createInitialAgentHardeningState,
   MOCK_AGENT_HARDENING_ARMY,
   MOCK_PATCH,
 } from "@/data/mockData";
 import type {
-  BattleState,
-  AttackScenario,
   AgentGeneration,
   AttackCategory,
-  Severity,
+  AttackScenario,
   AttackStatus,
-  WaveDefinition,
-  RunMetrics,
-  PatchSummary,
   BattleEvent,
+  BattleState,
+  PatchSummary,
+  RunMetrics,
+  Severity,
+  WaveDefinition,
 } from "@/types/agentforge";
 
-/* ========================================================================== */
-/*  Page Component                                                           */
-/* ========================================================================== */
+const PixiArenaWrapper = lazy(() => import("@/components/arena/PixiArenaWrapper"));
 
 export default function AgentHardeningPage() {
-  const [battleState, setBattleState] = useState<BattleState>(
-    createInitialAgentHardeningState,
+  const [battleState, setBattleState] = useState<BattleState>(() =>
+    createInitialAgentHardeningState(),
   );
   const [isRunning, setIsRunning] = useState(false);
   const [narration, setNarration] = useState(
-    "System ready. Awaiting wave execution.",
+    "RefundBot demo loaded. Awaiting adversarial wave.",
   );
-  const [animationPhase, setAnimationPhase] = useState("idle");
   const [speed, setSpeed] = useState(1);
   const [autoRun, setAutoRun] = useState(true);
   const autoRunRef = useRef(autoRun);
   autoRunRef.current = autoRun;
 
   const army = MOCK_AGENT_HARDENING_ARMY;
+  const activeGeneration =
+    battleState.generations.find((g) => g.id === battleState.activeGenerationId) ??
+    battleState.generations[0];
 
-  /* ---- Ref for latest handleRunWave (used by auto-chain) ---- */
-  const handleRunWaveRef = useRef<((targetWave?: number) => Promise<void>) | null>(null);
-
-  /* ---- Handlers ---- */
-
-  const handleRunWave = useCallback(async (targetWave?: number | React.MouseEvent) => {
-    setIsRunning(true);
-    setNarration("Deploying attack wave...");
-    setAnimationPhase("preparingWave");
+  const handleSpawnHarnesses = useCallback(() => {
     setBattleState((prev) => ({
       ...prev,
-      status: "running_wave",
-      currentAttackIndex: -1,
-      attacks: [],
+      events: [
+        ...prev.events,
+        makeBattleEvent(
+          "wave",
+          `${army.activeBatch.toLocaleString()} harnesses prepared for wave ${prev.currentWave}`,
+          "info",
+        ),
+      ],
     }));
+    setNarration("Harness army prepared for the current wave.");
+  }, [army.activeBatch]);
 
-    await delay(800 / speed);
-    setAnimationPhase("spawningEnemies");
-
-    // Generate enemies for this wave (compute wave-waves inline for auto-chain)
+  const handleRunWave = useCallback(async (targetWave?: number) => {
     const wave = typeof targetWave === "number" ? targetWave : battleState.currentWave;
-    const waveWaves = army.waves.filter((w) => w.waveNumber <= wave);
-    const enemies = generateWaveEnemies(wave, waveWaves);
-    await delay(600 / speed);
-
+    setIsRunning(true);
+    setNarration("Spawning adversarial harnesses.");
     setBattleState((prev) => ({
       ...prev,
       status: "running_wave",
       currentWave: wave,
       currentAttackIndex: -1,
-      attacks: [...enemies],
+      attacks: [],
+      events: [
+        ...prev.events,
+        makeBattleEvent("wave", `Wave ${wave} started`, "info"),
+      ],
+    }));
+
+    await delay(500 / speed);
+    const waveDefs = army.waves.filter((w) => w.waveNumber <= wave);
+    const enemies = generateWaveEnemies(wave, waveDefs);
+
+    setBattleState((prev) => ({
+      ...prev,
+      status: "running_wave",
+      attacks: enemies,
       events: [
         ...prev.events,
         makeBattleEvent(
-          "wave",
-          `Wave ${prev.currentWave}: ${enemies.length} threats detected`,
-          "info",
+          "attack",
+          `${enemies.length} visible attacks mapped to ${army.activeBatch.toLocaleString()} active harnesses`,
+          "warning",
         ),
       ],
     }));
 
-    // Execute each attack with full animation sequence
     for (let i = 0; i < enemies.length; i++) {
-      if (battleState.integrity <= 0) break;
-
       const enemy = enemies[i];
       const outcome = determineOutcome(enemy);
-      const resolvedStatus: AttackStatus =
-        outcome === "blocked" ? "blocked" : "failed";
-
       setBattleState((prev) => ({
         ...prev,
-        status: "running_wave",
         currentAttackIndex: i,
-        attacks: prev.attacks.map((atk, idx) =>
-          idx === i
-            ? { ...atk, status: resolvedStatus, enemyState: "attacking" }
-            : atk,
+        attacks: prev.attacks.map((attack, index) =>
+          index === i
+            ? { ...attack, status: "running", enemyState: "attacking" }
+            : attack,
         ),
       }));
-      setAnimationPhase("selectingEnemy");
-      await delay(300 / speed);
+      setNarration(`${enemy.label} is probing RefundBot.`);
 
-      setAnimationPhase("enemyApproaching");
-      await delay(800 / speed);
-
-      setAnimationPhase("enemyWindup");
-      await delay(400 / speed);
-
-      setAnimationPhase("enemyAttacking");
-      await delay(500 / speed);
-
-      setAnimationPhase("projectileTravel");
-      await delay(500 / speed);
+      await delay(900 / speed);
 
       if (outcome === "blocked") {
-        setAnimationPhase("blocked");
         setBattleState((prev) => ({
           ...prev,
           status: "attack_blocked",
           shield: Math.max(0, prev.shield - 4),
-          score: prev.score + 10,
-          attacks: prev.attacks.map((atk, idx) =>
-            idx === i
-              ? { ...atk, status: "blocked", enemyState: "blocked" }
-              : atk,
+          score: prev.score + 12,
+          attacks: prev.attacks.map((attack, index) =>
+            index === i
+              ? { ...attack, status: "blocked", enemyState: "blocked" }
+              : attack,
           ),
           metrics: {
             ...prev.metrics,
@@ -142,23 +125,22 @@ export default function AgentHardeningPage() {
             ...prev.events,
             makeBattleEvent(
               "pass",
-              `${enemy.label} blocked by guardrails`,
+              `${enemy.label} blocked by verifier and output guard`,
               "success",
             ),
           ],
         }));
         setNarration(`${enemy.label} blocked by guardrails.`);
       } else {
-        setAnimationPhase("damaged");
         setBattleState((prev) => ({
           ...prev,
           status: "attack_failed",
-          integrity: Math.max(0, prev.integrity - 14),
-          score: Math.max(0, prev.score - 15),
-          attacks: prev.attacks.map((atk, idx) =>
-            idx === i
-              ? { ...atk, status: "failed", enemyState: "successful" }
-              : atk,
+          integrity: Math.max(0, prev.integrity - 12),
+          score: Math.max(0, prev.score - 8),
+          attacks: prev.attacks.map((attack, index) =>
+            index === i
+              ? { ...attack, status: "failed", enemyState: "successful" }
+              : attack,
           ),
           metrics: {
             ...prev.metrics,
@@ -169,27 +151,23 @@ export default function AgentHardeningPage() {
             ...prev.events,
             makeBattleEvent(
               "fail",
-              `${enemy.label} breached agent defenses`,
+              `${enemy.label} breached wrapper policy`,
               "danger",
             ),
           ],
         }));
-        setNarration(`${enemy.label} breached defenses.`);
+        setNarration(`${enemy.label} breached wrapper policy.`);
       }
 
-      await delay(500 / speed);
-
-      setAnimationPhase("enemyDefeated");
+      await delay(550 / speed);
       setBattleState((prev) => ({
         ...prev,
-        attacks: prev.attacks.map((atk, idx) =>
-          idx === i ? { ...atk, enemyState: "defeated" } : atk,
+        attacks: prev.attacks.map((attack, index) =>
+          index === i ? { ...attack, enemyState: "defeated" } : attack,
         ),
       }));
-      await delay(600 / speed);
     }
 
-    setAnimationPhase("waveComplete");
     setBattleState((prev) => ({
       ...prev,
       status: "completed",
@@ -198,236 +176,126 @@ export default function AgentHardeningPage() {
         ...prev.events,
         makeBattleEvent(
           "wave",
-          `Wave ${prev.currentWave} complete. Score: ${prev.score}`,
+          `Wave ${wave} complete. ${prev.metrics.failed} failures recorded.`,
           "info",
         ),
       ],
     }));
-    setNarration(
-      `Wave complete. ${battleState.metrics.failed} failures detected.`,
-    );
+    setNarration("Wave complete. Review verifier failures before exporting.");
     setIsRunning(false);
-
-    // Auto-chain: if auto-run is on and we have more waves, advance after 2s
-    if (autoRunRef.current && wave < 20 && battleState.integrity > 0) {
-      const nextWave = wave + 1;
-      const hasFailures = battleState.metrics.failed > 0;
-      setTimeout(async () => {
-        // Auto-patch if failures were detected in the completed wave
-        if (hasFailures) {
-          setAnimationPhase("patching");
-          setNarration("Auto-patching defenses...");
-          await delay(1200 / speed);
-          setBattleState((prev) => ({
-            ...prev,
-            mode: "patched",
-            latestPatch: MOCK_PATCH,
-            activeGenerationId:
-              prev.generations[Math.min(1, prev.generations.length - 1)].id,
-            integrity: Math.min(100, prev.integrity + 25),
-            shield: 75,
-            score: prev.score + 50,
-            events: [
-              ...prev.events,
-              makeBattleEvent("patch", "Auto-patch applied. Agent upgraded.", "info"),
-            ],
-          }));
-          setNarration("Auto-patch applied.");
-          await delay(1000 / speed);
-        }
-
-        setNarration(`Auto-advancing to wave ${nextWave}...`);
-        setBattleState((prev) => ({
-          ...prev,
-          currentWave: nextWave,
-          events: [
-            ...prev.events,
-            makeBattleEvent("wave", `Auto-proceeding to wave ${nextWave}`, "info"),
-          ],
-        }));
-        await delay(2000);
-        handleRunWaveRef.current?.(nextWave);
-      }, 0);
-    }
-  }, [battleState, speed, army.waves]);
-  handleRunWaveRef.current = handleRunWave;
+  }, [army.activeBatch, army.waves, battleState.currentWave, speed]);
 
   const handleApplyPatch = useCallback(async () => {
     setIsRunning(true);
-    setAnimationPhase("patching");
-    setNarration("Applying hardening patch...");
+    setNarration("Applying wrapper-level guardrail patch.");
     setBattleState((prev) => ({
       ...prev,
       status: "patching",
+      events: [
+        ...prev.events,
+        makeBattleEvent("patch", "Patch proposal accepted for RefundBot", "info"),
+      ],
     }));
-    await delay(1200 / speed);
 
-    setAnimationPhase("upgraded");
+    await delay(800 / speed);
+
     setBattleState((prev) => ({
       ...prev,
       status: "upgraded",
       mode: "patched",
       latestPatch: MOCK_PATCH,
       activeGenerationId:
-        prev.generations[
-          Math.min(1, prev.generations.length - 1)
-        ].id,
-      integrity: Math.min(100, prev.integrity + 25),
-      shield: 75,
+        prev.generations[Math.min(1, prev.generations.length - 1)].id,
+      integrity: Math.min(100, prev.integrity + 24),
+      shield: 76,
       score: prev.score + 50,
       metrics: {
         ...prev.metrics,
-        failureRateBefore: prev.metrics.failureRateAfter,
-        failureRateAfter: Math.max(0, prev.metrics.failureRateAfter - 8),
-        robustnessGain: 8,
+        failureRateBefore: 42,
+        failureRateAfter: 6,
+        robustnessGain: 36,
       },
       events: [
         ...prev.events,
-        makeBattleEvent("patch", "Patch applied. Agent upgraded.", "info"),
+        makeBattleEvent(
+          "patch",
+          "Prompt Guard patch applied. Wrapper export ready.",
+          "info",
+        ),
       ],
     }));
-    setNarration("Patch applied. Agent upgraded.");
-    await delay(1000 / speed);
-
-    setBattleState((prev) => ({
-      ...prev,
-      events: [
-        ...prev.events,
-        makeBattleEvent("export", "Checkpoint saved.", "info"),
-      ],
-    }));
-    setAnimationPhase("idle");
+    setNarration("Prompt Guard patch applied. RefundBot upgraded to v1.");
     setIsRunning(false);
   }, [speed]);
 
   const handleReplay = useCallback(() => {
-    if (battleState.attacks.length > 0) {
-      setNarration(
-        `Replaying: ${battleState.attacks[0].label}`,
-      );
-    }
-  }, [battleState]);
+    const first = battleState.attacks[0];
+    setNarration(first ? `Replay queued for ${first.label}.` : "No attack trace to replay yet.");
+  }, [battleState.attacks]);
 
   const handleExport = useCallback(() => {
-    const blob = new Blob(
-      [
-        JSON.stringify(
-          {
-            agent: "RefundBot",
-            wave: battleState.currentWave,
-            score: battleState.score,
-            metrics: battleState.metrics,
-            generations: battleState.generations,
-          },
-          null,
-          2,
-        ),
-      ],
-      { type: "application/json" },
-    );
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `agentforge_report_${Date.now()}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-    setNarration("Export complete.");
+    downloadJson("agentforge_agent_report.json", {
+      real_or_simulated: "demo_simulation",
+      export_type: "hardened_wrapper_report",
+      limitation: "This export contains wrapper settings and reports, not model weights.",
+      agent: "RefundBot",
+      wave: battleState.currentWave,
+      metrics: battleState.metrics,
+      latestPatch: battleState.latestPatch,
+    });
+    setNarration("Export complete. Wrapper package metadata included.");
   }, [battleState]);
-
-  const handleAttackClick = useCallback(
-    (attackId: string) => {
-      const atk = battleState.attacks.find((a) => a.id === attackId);
-      if (atk) setNarration(`Inspecting: ${atk.label}`);
-    },
-    [battleState.attacks],
-  );
 
   const handleExportAgent = useCallback(() => {
-    const blob = new Blob(
-      [
-        JSON.stringify(
-          {
-            name: "RefundBot",
-            version:
-              battleState.generations.find(
-                (g) => g.id === battleState.activeGenerationId,
-              )?.version ?? "v1",
-            patchType:
-              battleState.generations.find(
-                (g) => g.id === battleState.activeGenerationId,
-              )?.patchType ?? "none",
-          },
-          null,
-          2,
-        ),
-      ],
-      { type: "application/json" },
-    );
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "hardened_agent.json";
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [battleState]);
-
-  const handleExportReport = useCallback(() => {
-    handleExport();
-  }, [handleExport]);
+    downloadJson("hardened_agent.json", {
+      real_or_simulated: "demo_simulation",
+      export_type: "hardened_wrapper",
+      limitations: ["No model weights are exported.", "Demo run uses deterministic mock behavior."],
+      agent: "RefundBot",
+      generation: activeGeneration?.version ?? "v0",
+      patch: battleState.latestPatch,
+    });
+  }, [activeGeneration?.version, battleState.latestPatch]);
 
   const handleExportRunner = useCallback(() => {
-    const content = `#!/usr/bin/env python3\n# AgentForge Hardened Runner\n# Generated for: RefundBot\nimport json\n\nprint("AgentForge hardened agent runner ready.")\n`;
-    const blob = new Blob([content], { type: "text/python" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "runner.py";
-    a.click();
-    URL.revokeObjectURL(url);
+    downloadText(
+      "runner.py",
+      [
+        "# AgentForge hardened wrapper runner",
+        "# real_or_simulated: demo_simulation",
+        "# limitations: wrapper export only, no model weights",
+        "print('AgentForge hardened wrapper ready')",
+      ].join("\n"),
+      "text/python",
+    );
   }, []);
 
-  const handleExportBundle = useCallback(() => {
-    handleExport();
-  }, [handleExport]);
+  const handleAttackClick = useCallback((attackId: string) => {
+    const attack = battleState.attacks.find((item) => item.id === attackId);
+    if (attack) setNarration(`Inspecting trace for ${attack.label}.`);
+  }, [battleState.attacks]);
 
-  const handleUploadAgent = useCallback(() => {
-    setNarration("Upload agent.json - feature ready in production.");
-  }, []);
-
-  const handleLoadDemo = useCallback(() => {
-    setBattleState(createInitialAgentHardeningState());
-    setNarration("Demo RefundBot loaded.");
-  }, []);
-
-  /* ---- Severity distribution ---- */
-
-  const severityDist = army.categories.map((c) => ({
-    label: c.severity,
-    count: c.count,
+  const severityDist = army.categories.map((category) => ({
+    label: category.severity,
+    count: category.count,
     color:
-      c.severity === "critical"
+      category.severity === "critical"
         ? "#C2414B"
-        : c.severity === "high"
+        : category.severity === "high"
           ? "#C77700"
-          : c.severity === "medium"
+          : category.severity === "medium"
             ? "#2563EB"
             : "#7A7D85",
   }));
-
-  /* ---- Status for arena ---- */
-
-  const arenaStatus = isRunning
-    ? "running_wave"
-    : animationPhase === "waveComplete"
-      ? "completed"
-      : battleState.integrity <= 0
-        ? "collapsed"
-        : "idle";
 
   return (
     <WorkspaceShell>
       <TopNavigationBar
         mode="Agent Hardening"
+        currentWave={battleState.currentWave}
+        activeLabel={activeGeneration?.version ?? "v0"}
+        harnessCount={army.activeBatch}
+        onSpawnHarnesses={handleSpawnHarnesses}
         onRunWave={handleRunWave}
         onReplay={handleReplay}
         onApplyPatch={handleApplyPatch}
@@ -435,155 +303,553 @@ export default function AgentHardeningPage() {
         isRunning={isRunning}
       />
 
-      <div className="flex flex-1 w-full overflow-hidden">
-        {/* ================================================================ */}
-        {/* LEFT PANEL (440px)                                              */}
-        {/* ================================================================ */}
-        <div
-          className="flex-shrink-0 overflow-y-auto flex flex-col"
-          style={{
-            width: "440px",
-            maxHeight: "calc(100vh - 52px)",
-            background: "#FAF9F6",
-            borderRight: "1px solid #DCD8CC",
-            padding: "14px",
-            gap: "14px",
-            scrollbarWidth: "thin",
-            scrollbarColor: "#DCD8CC transparent",
-          }}
-        >
-          <AgentSourcePanel
-            agentName="RefundBot Agent"
-            systemPromptStatus="loaded"
-            toolSchemaStatus="loaded"
-            runtimeMode="deterministic"
-            onLoadDemo={handleLoadDemo}
-            onUploadAgent={handleUploadAgent}
-          />
+      <main className="af-workspace">
+        <aside className="af-left-panel" aria-label="Agent hardening controls">
+          <div className="af-left-panel-inner">
+            <AgentSourceCard onLoadDemo={() => {
+              setBattleState(createInitialAgentHardeningState());
+              setNarration("Demo RefundBot loaded.");
+            }} />
+            <HarnessArmyCard
+              totalHarnesses={army.totalGenerated}
+              activeWaveHarnesses={army.activeBatch}
+              categoriesCount={army.categoryCount}
+              severityDistribution={severityDist}
+              waves={army.waves}
+              currentWave={battleState.currentWave}
+            />
+            <GenerationTimeline
+              generations={battleState.generations}
+              activeId={battleState.activeGenerationId}
+            />
+            <AttackQueue attacks={battleState.attacks} onAttackClick={handleAttackClick} />
+            <EvaluationLog metrics={battleState.metrics} currentWave={battleState.currentWave} />
+            <LatestPatch patch={battleState.latestPatch} />
+            <ExportPackage
+              onExportAgent={handleExportAgent}
+              onExportReport={handleExport}
+              onExportRunner={handleExportRunner}
+              onExportBundle={handleExport}
+            />
+          </div>
+        </aside>
 
-          <HarnessArmyPanel
-            totalHarnesses={army.totalGenerated}
-            activeWaveHarnesses={army.activeBatch}
-            categoriesCount={army.categoryCount}
-            severityDistribution={severityDist}
-            waves={army.waves}
-            currentWave={battleState.currentWave}
-          />
-
-          <AgentGenerationsPanel
-            generations={battleState.generations}
-            activeId={battleState.activeGenerationId}
-          />
-
-          <AttackQueuePanel
-            attacks={battleState.attacks}
-            onAttackClick={handleAttackClick}
-          />
-
-          <EvaluationLogPanel
-            metrics={battleState.metrics}
-            currentWave={battleState.currentWave}
-          />
-
-          <LatestPatchPanel patch={battleState.latestPatch} />
-
-          <AgentExportPanel
-            onExportAgent={handleExportAgent}
-            onExportReport={handleExportReport}
-            onExportRunner={handleExportRunner}
-            onExportBundle={handleExportBundle}
-          />
-        </div>
-
-        {/* ================================================================ */}
-        {/* RIGHT PANEL (flex-1)                                            */}
-        {/* ================================================================ */}
-        <div
-          className="flex-1 flex flex-col overflow-y-auto"
-          style={{ background: "#FCFCF7" }}
-        >
-          <div className="flex-1 flex flex-col p-4 gap-3" style={{ minHeight: 0 }}>
-            {/* Arena Header */}
-            <ArenaHeader
-              label="Agent Hardening Arena"
-              defender="RefundBot Agent"
-              wave={battleState.currentWave}
-              status={arenaStatus}
-              elapsed={narration}
-              accentColor="#2563EB"
+        <section className="af-right-panel" aria-label="Agent hardening simulation">
+          <div className="af-simulation-grid">
+            <SimulationHeader
+              title="Agent Hardening Arena"
+              subtitle="RefundBot Agent"
+              status={battleState.status}
+              narration={narration}
+              accent="#2563EB"
+              modeLabel="Wrapper Export"
             />
 
-            {/* Pixi Arena */}
-            <div
-              className="flex-1 rounded-xl overflow-hidden"
-              style={{
-                background: "#FAF9F6",
-                border: "1px solid #DCD8CC",
-                minHeight: "320px",
-                maxHeight: "55vh",
-              }}
-            >
-              <PixiArenaWrapper
-                battleState={battleState}
-                onAnimationComplete={(e) => {}}
-                className="w-full h-full"
+            <div className="af-simulation-frame">
+              <Suspense fallback={<ArenaFallback />}>
+                <PixiArenaWrapper
+                  battleState={battleState}
+                  className="h-full w-full"
+                />
+              </Suspense>
+            </div>
+
+            <div className="grid gap-3 xl:grid-cols-[auto_minmax(0,1fr)] xl:items-center">
+              <SpeedAutoControls
+                speed={speed}
+                onSpeedChange={setSpeed}
+                autoRun={autoRun}
+                onAutoRunChange={setAutoRun}
+                accent="#2563EB"
+              />
+              <WaveLadder
+                waves={army.waves}
+                currentWave={battleState.currentWave}
+                accent="#2563EB"
               />
             </div>
 
-            {/* Arena Speed Controls + Auto-Run Toggle */}
-            <div className="flex items-center gap-3 flex-wrap">
-              <ArenaSpeedControls speed={speed} onSpeedChange={setSpeed} />
-              <div
-                className="flex items-center gap-2 px-3 py-1.5 rounded-lg"
-                style={{ background: "#FAF9F6", border: "1px solid #DCD8CC" }}
-              >
-                <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "#7A7D85" }}>
-                  Auto-Run
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setAutoRun((v) => !v)}
-                  className="rounded px-2 py-0.5 text-[11px] font-semibold font-mono transition-all"
-                  style={{
-                    background: autoRun ? "#2563EB" : "transparent",
-                    color: autoRun ? "#FFFFFF" : "#575A60",
-                    border: `1px solid ${autoRun ? "#2563EB" : "#DCD8CC"}`,
-                  }}
-                >
-                  {autoRun ? "ON" : "OFF"}
-                </button>
-              </div>
-            </div>
-
-            {/* Wave Ladder */}
-            <WaveLadder
-              waves={army.waves}
-              currentWave={battleState.currentWave}
-              accentColor="#2563EB"
+            <MetricDock
+              metrics={[
+                ["Integrity", battleState.integrity, "%", "#1D1D1F"],
+                ["Shield", battleState.shield, "%", "#0284C7"],
+                ["Pass Rate", getPassRate(battleState.metrics), "%", "#21865A"],
+                ["Failures", battleState.metrics.failed, "cases", "#C2414B"],
+              ]}
             />
 
-            {/* Bottom Metrics Row */}
-            <BottomMetricsRow metrics={battleState.metrics} />
-
-            {/* Export and Next Wave */}
-            <ExportAndNextWavePanel
-              onRunWave={handleRunWave}
-              onExportAgent={handleExportAgent}
-              onExportReport={handleExportReport}
-              onExportBundle={handleExportBundle}
+            <ExportAndNextWave
+              title="Export & Share"
+              runTitle="Next Wave"
+              runCopy="Run the next adversarial wave against the active wrapper generation."
+              runLabel="Run Wave"
               isRunning={isRunning}
-              accentColor="#2563EB"
+              accent="#2563EB"
+              onRun={handleRunWave}
+              onExportPrimary={handleExportAgent}
+              onExportReport={handleExport}
+              onExportBundle={handleExport}
             />
           </div>
-        </div>
-      </div>
+        </section>
+      </main>
     </WorkspaceShell>
   );
 }
 
-/* ========================================================================== */
-/*  Helper Functions                                                         */
-/* ========================================================================== */
+function Panel({
+  title,
+  children,
+  className = "af-panel",
+  meta,
+}: {
+  title: string;
+  children: ReactNode;
+  className?: string;
+  meta?: ReactNode;
+}) {
+  return (
+    <section className={`${className} p-4`}>
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h2 className="af-section-label">{title}</h2>
+        {meta}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function AgentSourceCard({ onLoadDemo }: { onLoadDemo: () => void }) {
+  return (
+    <Panel title="Agent Source" className="af-panel-cool" meta={<span className="af-chip">Loaded</span>}>
+      <div className="grid gap-3">
+        <div className="grid grid-cols-[112px_minmax(0,1fr)] items-center gap-3 text-[13px]">
+          <span className="font-semibold text-[#575A60]">Agent Name</span>
+          <span className="rounded-lg border border-[#DCD8CC] bg-[#FDFDFD] px-3 py-2 font-semibold">
+            RefundBot Agent
+          </span>
+        </div>
+        <div className="grid grid-cols-[112px_minmax(0,1fr)] gap-3 text-[13px]">
+          <span className="font-semibold text-[#575A60]">Status</span>
+          <div className="flex flex-wrap gap-2">
+            <span className="af-chip text-[#21865A]">System Prompt: Loaded</span>
+            <span className="af-chip text-[#21865A]">Tool Schema: Loaded</span>
+            <span className="af-chip text-[#2563EB]">Runtime: deterministic</span>
+          </div>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <button type="button" onClick={onLoadDemo} className="af-button af-button-primary">
+            Load RefundBot Demo
+          </button>
+          <button type="button" className="af-button">
+            Upload agent.json
+          </button>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function HarnessArmyCard({
+  totalHarnesses,
+  activeWaveHarnesses,
+  categoriesCount,
+  severityDistribution,
+  waves,
+  currentWave,
+}: {
+  totalHarnesses: number;
+  activeWaveHarnesses: number;
+  categoriesCount: number;
+  severityDistribution: { label: string; count: number; color: string }[];
+  waves: WaveDefinition[];
+  currentWave: number;
+}) {
+  const nextBossWave = waves.find((wave) => wave.isBossWave && wave.waveNumber > currentWave);
+  const maxCount = Math.max(...severityDistribution.map((item) => item.count), 1);
+
+  return (
+    <Panel title="Harness Army" className="af-panel-warm" meta={<span className="af-chip">Demo Simulation Mode</span>}>
+      <div className="grid grid-cols-3 gap-3">
+        <MiniStat label="Total" value={totalHarnesses.toLocaleString()} />
+        <MiniStat label="Active" value={activeWaveHarnesses.toLocaleString()} color="#0284C7" />
+        <MiniStat label="Families" value={categoriesCount} color="#7C3AED" />
+      </div>
+      <div className="mt-4 grid gap-2">
+        {severityDistribution.slice(0, 4).map((item) => (
+          <div key={`${item.label}-${item.count}`} className="grid grid-cols-[72px_minmax(0,1fr)_44px] items-center gap-2 text-[12px]">
+            <span className="font-semibold capitalize text-[#575A60]">{item.label}</span>
+            <span className="h-1.5 overflow-hidden rounded-full bg-[#DCD8CC]">
+              <span
+                className="block h-full rounded-full"
+                style={{ width: `${Math.max(4, (item.count / maxCount) * 100)}%`, background: item.color }}
+              />
+            </span>
+            <span className="af-mono text-right text-[#575A60]">{item.count}</span>
+          </div>
+        ))}
+      </div>
+      {nextBossWave && (
+        <div className="mt-4 rounded-lg border border-[rgba(194,65,75,0.22)] bg-[rgba(194,65,75,0.08)] px-3 py-2 text-[12px] font-semibold text-[#C2414B]">
+          Boss Wave {nextBossWave.waveNumber} in {nextBossWave.waveNumber - currentWave} waves
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function MiniStat({ label, value, color = "#1D1D1F" }: { label: string; value: string | number; color?: string }) {
+  return (
+    <div>
+      <span className="af-meta font-semibold">{label}</span>
+      <span className="af-mono mt-1 block text-[24px] font-bold leading-none" style={{ color }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function GenerationTimeline({ generations, activeId }: { generations: AgentGeneration[]; activeId: string }) {
+  return (
+    <Panel title="Agent Generations" className="af-panel">
+      <div className="grid gap-2">
+        {generations.map((generation) => {
+          const active = generation.id === activeId;
+          return (
+            <div
+              key={generation.id}
+              className="grid grid-cols-[54px_minmax(0,1fr)_64px] items-center gap-3 rounded-lg border px-3 py-2"
+              style={{
+                background: active ? "#F0F8FF" : "#FDFDFD",
+                borderColor: active ? "rgba(37,99,235,0.28)" : "#DCD8CC",
+              }}
+            >
+              <span className="af-mono font-bold text-[#2563EB]">{generation.version}</span>
+              <span className="min-w-0">
+                <span className="block truncate text-[13px] font-semibold text-[#1D1D1F]">
+                  {generation.name}
+                </span>
+                <span className="block text-[12px] text-[#7A7D85]">{generation.patchType}</span>
+              </span>
+              <span className="af-mono text-right text-[12px] font-semibold text-[#575A60]">
+                {generation.failureRate}%
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </Panel>
+  );
+}
+
+function AttackQueue({
+  attacks,
+  onAttackClick,
+}: {
+  attacks: AttackScenario[];
+  onAttackClick: (attackId: string) => void;
+}) {
+  return (
+    <Panel title="Attack Queue" className="af-panel-cool" meta={<span className="af-chip">{attacks.length}</span>}>
+      <div className="grid gap-2">
+        {attacks.length === 0 && (
+          <div className="rounded-lg border border-dashed border-[#DCD8CC] bg-[#FDFDFD] px-3 py-4 text-center text-[13px] text-[#7A7D85]">
+            No attacks yet. Run a wave to populate traces.
+          </div>
+        )}
+        {attacks.map((attack) => (
+          <button
+            key={attack.id}
+            type="button"
+            onClick={() => onAttackClick(attack.id)}
+            className="af-row-button grid min-h-11 grid-cols-[8px_minmax(0,1fr)_68px] items-center gap-3 px-3 py-2"
+          >
+            <span
+              className="h-2 w-2 rounded-sm"
+              style={{ background: categoryColor(attack.category) }}
+              aria-hidden="true"
+            />
+            <span className="min-w-0">
+              <span className="block truncate text-[13px] font-semibold">{attack.label}</span>
+              <span className="block text-[12px] capitalize text-[#7A7D85]">{attack.severity}</span>
+            </span>
+            <span className="af-mono text-right text-[11px] font-semibold" style={{ color: statusColor(attack.status) }}>
+              {attack.status}
+            </span>
+          </button>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
+function EvaluationLog({ metrics, currentWave }: { metrics: RunMetrics; currentWave: number }) {
+  return (
+    <Panel title="Evaluation Log" className="af-panel">
+      <div className="grid grid-cols-2 gap-2">
+        <MiniCell label="Attacks Tested" value={metrics.attacksTested} />
+        <MiniCell label="Current Wave" value={currentWave} color="#2563EB" />
+        <MiniCell label="Pass Rate" value={`${getPassRate(metrics)}%`} color="#21865A" />
+        <MiniCell label="Failure Rate" value={`${getFailRate(metrics)}%`} color="#C2414B" />
+      </div>
+    </Panel>
+  );
+}
+
+function MiniCell({ label, value, color = "#1D1D1F" }: { label: string; value: string | number; color?: string }) {
+  return (
+    <div className="rounded-lg border border-[#DCD8CC] bg-[#FDFDFD] px-3 py-2">
+      <span className="af-meta font-semibold">{label}</span>
+      <span className="af-mono mt-1 block text-[20px] font-bold leading-none" style={{ color }}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function LatestPatch({ patch }: { patch: PatchSummary | null }) {
+  return (
+    <Panel title="Latest Patch" className="af-panel-lavender" meta={patch ? <span className="af-chip text-[#21865A]">Applied</span> : undefined}>
+      {!patch ? (
+        <div className="rounded-lg border border-dashed border-[#DCD8CC] bg-[#FDFDFD] px-3 py-4 text-center text-[13px] text-[#7A7D85]">
+          No patches applied
+        </div>
+      ) : (
+        <div className="grid gap-3">
+          <div>
+            <span className="af-chip text-[#7C3AED]">{patch.patchType}</span>
+            <p className="mt-3 text-[13px] leading-5 text-[#575A60]">
+              {patch.addedRules[0] || patch.title}
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            <span className="af-mono text-[12px] font-bold text-[#21865A]">+12% Survival</span>
+            <span className="af-mono text-[12px] font-bold text-[#21865A]">-8% Damage</span>
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ExportPackage({
+  onExportAgent,
+  onExportReport,
+  onExportRunner,
+  onExportBundle,
+}: {
+  onExportAgent: () => void;
+  onExportReport: () => void;
+  onExportRunner: () => void;
+  onExportBundle: () => void;
+}) {
+  return (
+    <Panel title="Export Package" className="af-panel-cool" meta={<span className="af-chip">Wrapper only</span>}>
+      <p className="mb-3 text-[12px] leading-5 text-[#575A60]">
+        Hardened wrapper exports include prompts, tool constraints, verifier evidence, and limitations.
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        <button type="button" className="af-button" onClick={onExportAgent}>Export agent.json</button>
+        <button type="button" className="af-button" onClick={onExportReport}>Export report.json</button>
+        <button type="button" className="af-button" onClick={onExportRunner}>Export runner.py</button>
+        <button type="button" className="af-button" onClick={onExportBundle}>Export bundle.zip</button>
+      </div>
+    </Panel>
+  );
+}
+
+function SimulationHeader({
+  title,
+  subtitle,
+  status,
+  narration,
+  accent,
+  modeLabel,
+}: {
+  title: string;
+  subtitle: string;
+  status: string;
+  narration: string;
+  accent: string;
+  modeLabel: string;
+}) {
+  const active = status === "running_wave" || status === "patching";
+  return (
+    <div className="af-panel-canvas flex min-h-14 flex-wrap items-center justify-between gap-3 px-4 py-3">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <h1 className="text-[22px] font-semibold leading-none text-[#1D1D1F]">{title}</h1>
+          <span className="af-chip" style={{ color: accent }}>{subtitle}</span>
+          <span className="af-chip">{modeLabel}</span>
+        </div>
+        <p className="mt-2 truncate text-[13px] text-[#575A60]">{narration}</p>
+      </div>
+      <span className="af-status-chip">
+        <span className="af-status-dot" style={{ background: active ? "#C77700" : "#21865A" }} />
+        {active ? "Running" : "Ready"}
+      </span>
+    </div>
+  );
+}
+
+function SpeedAutoControls({
+  speed,
+  onSpeedChange,
+  autoRun,
+  onAutoRunChange,
+  accent,
+}: {
+  speed: number;
+  onSpeedChange: (speed: number) => void;
+  autoRun: boolean;
+  onAutoRunChange: (value: boolean) => void;
+  accent: string;
+}) {
+  return (
+    <div className="af-panel flex flex-wrap items-center gap-2 px-3 py-2">
+      <span className="af-section-label mr-1">Speed</span>
+      {[0.5, 1, 2, 4].map((item) => (
+        <button
+          key={item}
+          type="button"
+          onClick={() => onSpeedChange(item)}
+          className="af-button h-8 min-h-8 px-2 af-mono"
+          style={{
+            background: speed === item ? "#1D1D1F" : "#FDFDFD",
+            color: speed === item ? "#FFFFFF" : "#575A60",
+          }}
+        >
+          {item}x
+        </button>
+      ))}
+      <span className="mx-1 h-5 w-px bg-[#DCD8CC]" aria-hidden="true" />
+      <span className="af-section-label">Auto-Run</span>
+      <button
+        type="button"
+        onClick={() => onAutoRunChange(!autoRun)}
+        className="af-button h-8 min-h-8 px-3 af-mono"
+        style={{
+          background: autoRun ? accent : "#FDFDFD",
+          borderColor: autoRun ? accent : "#DCD8CC",
+          color: autoRun ? "#FFFFFF" : "#575A60",
+        }}
+      >
+        {autoRun ? "ON" : "OFF"}
+      </button>
+    </div>
+  );
+}
+
+function WaveLadder({ waves, currentWave, accent }: { waves: WaveDefinition[]; currentWave: number; accent: string }) {
+  return (
+    <div className="af-panel-canvas overflow-x-auto p-3">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="af-section-label">Wave Ladder</p>
+        <span className="af-chip">20 waves</span>
+      </div>
+      <div
+        className="grid min-w-[920px] gap-1"
+        style={{ gridTemplateColumns: "repeat(20, minmax(0, 1fr))" }}
+      >
+        {waves.map((wave) => {
+          const active = wave.waveNumber === currentWave;
+          const past = wave.waveNumber < currentWave;
+          return (
+            <div
+              key={wave.waveNumber}
+              className="rounded-lg border px-1 py-2 text-center"
+              style={{
+                background: active ? `${accent}14` : past ? "rgba(33,134,90,0.08)" : "#FDFDFD",
+                borderColor: active ? `${accent}55` : "#DCD8CC",
+              }}
+            >
+              <span className="af-mono block text-[13px] font-bold" style={{ color: active ? accent : past ? "#21865A" : "#7A7D85" }}>
+                {String(wave.waveNumber).padStart(2, "0")}
+              </span>
+              <span className="mt-1 block text-[9px] font-semibold text-[#7A7D85]">
+                {wave.isBossWave ? "BOSS" : wave.visibleEnemies}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function MetricDock({ metrics }: { metrics: [string, string | number, string, string][] }) {
+  return (
+    <div className="af-metric-grid">
+      {metrics.map(([label, value, suffix, color]) => (
+        <div key={label} className="af-metric">
+          <span className="af-metric-label">{label}</span>
+          <span className="af-metric-value af-mono" style={{ color }}>
+            {value}
+            <span className="ml-1 text-[13px] font-semibold text-[#7A7D85]">{suffix}</span>
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ExportAndNextWave({
+  title,
+  runTitle,
+  runCopy,
+  runLabel,
+  isRunning,
+  accent,
+  onRun,
+  onExportPrimary,
+  onExportReport,
+  onExportBundle,
+}: {
+  title: string;
+  runTitle: string;
+  runCopy: string;
+  runLabel: string;
+  isRunning: boolean;
+  accent: string;
+  onRun: () => void;
+  onExportPrimary: () => void;
+  onExportReport: () => void;
+  onExportBundle: () => void;
+}) {
+  return (
+    <div className="grid gap-3 xl:grid-cols-2">
+      <section className="af-panel-canvas p-4">
+        <h2 className="af-section-label">{title}</h2>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <button type="button" onClick={onExportPrimary} className="af-button">Export Agent</button>
+          <button type="button" onClick={onExportReport} className="af-button">Export Report</button>
+          <button type="button" onClick={onExportBundle} className="af-button">Export Bundle</button>
+        </div>
+      </section>
+      <section className="af-panel-canvas p-4">
+        <h2 className="af-section-label">{runTitle}</h2>
+        <p className="mt-2 text-[13px] leading-5 text-[#575A60]">{runCopy}</p>
+        <button
+          type="button"
+          onClick={onRun}
+          disabled={isRunning}
+          className="af-button mt-3 w-full text-[14px]"
+          style={{ background: accent, borderColor: accent, color: "#FFFFFF" }}
+        >
+          {isRunning ? "Running" : runLabel}
+        </button>
+      </section>
+    </div>
+  );
+}
+
+function ArenaFallback() {
+  return (
+    <div className="flex h-full min-h-[400px] items-center justify-center text-[13px] font-semibold text-[#7A7D85]">
+      Loading arena renderer
+    </div>
+  );
+}
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -596,7 +862,7 @@ function makeBattleEvent(
   message: string,
   severity: BattleEvent["severity"] = "info",
 ): BattleEvent {
-  eventCounter++;
+  eventCounter += 1;
   return {
     id: `evt-${eventCounter}`,
     timestamp: new Date().toTimeString().slice(0, 8),
@@ -619,735 +885,96 @@ function generateWaveEnemies(
     "multi_turn_escalation",
   ];
   const count = Math.min(3 + waveNumber, 8);
-  const enemies: AttackScenario[] = [];
+  const waveDef = currentWaves.find((wave) => wave.waveNumber === waveNumber);
 
-  const waveDef = currentWaves.find((w) => w.waveNumber === waveNumber);
-
-  for (let i = 0; i < count; i++) {
-    const cat = categories[i % categories.length];
-    enemies.push({
-      id: `enemy-w${waveNumber}-${i}`,
-      category: cat,
-      label: `${cat.replace(/_/g, " ")} Attack #${i + 1}`,
+  return Array.from({ length: count }, (_, index) => {
+    const category = categories[index % categories.length];
+    const attack: AttackScenario = {
+      id: `enemy-w${waveNumber}-${index}`,
+      category,
+      label: `${titleCase(category)} Attack #${index + 1}`,
       severity: (
-        i >= count - 2
+        index >= count - 2
           ? "critical"
-          : i % 3 === 0
+          : index % 3 === 0
             ? "high"
-            : i % 2 === 0
+            : index % 2 === 0
               ? "medium"
               : "low"
       ) as Severity,
-      prompt: `Attempt to ${cat.replace(/_/g, " ")} through technique ${i + 1}`,
+      prompt: `Attempt to ${category.replace(/_/g, " ")} through technique ${index + 1}`,
       status: "pending" as AttackStatus,
       enemyState: "idle",
-    });
-  }
-
-  if (waveDef?.isBossWave && enemies.length > 0) {
-    const boss = enemies[enemies.length - 1];
-    boss.severity = "critical";
-    boss.label = `BOSS: ${boss.label}`;
-  }
-
-  return enemies;
+    };
+    if (waveDef?.isBossWave && index === count - 1) {
+      attack.label = `BOSS: ${attack.label}`;
+      attack.severity = "critical";
+    }
+    return attack;
+  });
 }
 
-function determineOutcome(
-  attack: AttackScenario,
-): "blocked" | "damaged" {
-  const FAILING = [
+function determineOutcome(attack: AttackScenario): "blocked" | "failed" {
+  const failing: AttackCategory[] = [
     "prompt_injection",
     "role_impersonation",
     "policy_extraction",
   ];
-  if (FAILING.includes(attack.category)) return "damaged";
-  return "blocked";
+  return failing.includes(attack.category) ? "failed" : "blocked";
 }
 
-/* ========================================================================== */
-/*  INLINE SUB-COMPONENTS (Light Mode)                                       */
-/* ========================================================================== */
-
-/* -------------------------------------------------------------------------- */
-/*  AgentGenerationsPanel                                                    */
-/* -------------------------------------------------------------------------- */
-
-function AgentGenerationsPanel({
-  generations,
-  activeId,
-}: {
-  generations: AgentGeneration[];
-  activeId: string;
-}) {
-  return (
-    <div className="flex flex-col gap-2" style={{ background: "#F2F8FC", border: "1px solid #DCD8CC", borderRadius: "12px", padding: "12px" }}>
-      <span
-        className="text-[11px] font-bold tracking-widest uppercase"
-        style={{ color: "#7A7D85", letterSpacing: "0.08em" }}
-      >
-        Agent Generations
-      </span>
-      <div className="flex gap-2 overflow-x-auto pb-1" style={{ scrollbarWidth: "thin" }}>
-        {generations.map((gen) => {
-          const isActive = gen.id === activeId;
-          const statusColor =
-            gen.status === "active"
-              ? "#2563EB"
-              : gen.status === "patched"
-                ? "#7C3AED"
-                : gen.status === "final"
-                  ? "#21865A"
-                  : "#C2414B";
-          return (
-            <div
-              key={gen.id}
-              className="flex-shrink-0 rounded-lg flex flex-col items-center py-2 px-2 transition-all"
-              style={{
-                width: "90px",
-                background: "#FDFDFD",
-                border: isActive
-                  ? `1px solid ${statusColor}`
-                  : "1px solid #DCD8CC",
-                boxShadow: isActive
-                  ? `0 0 6px ${statusColor}30`
-                  : "none",
-              }}
-            >
-              <span className="text-[11px] font-mono font-bold" style={{ color: "#1D1D1F" }}>
-                {gen.version}
-              </span>
-              <span className="text-[9px] font-medium mt-0.5 text-center" style={{ color: "#575A60" }}>
-                {gen.name}
-              </span>
-              <div className="flex items-center gap-1 mt-1">
-                <div className="rounded-full" style={{ width: "5px", height: "5px", background: statusColor }} />
-                <span className="text-[8px] uppercase tracking-wider" style={{ color: "#7A7D85" }}>
-                  {gen.status}
-                </span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
+function getPassRate(metrics: RunMetrics): number {
+  return metrics.attacksTested > 0
+    ? Math.round((metrics.passed / metrics.attacksTested) * 100)
+    : 0;
 }
 
-/* -------------------------------------------------------------------------- */
-/*  AttackQueuePanel                                                         */
-/* -------------------------------------------------------------------------- */
-
-const CATEGORY_COLORS: Record<AttackCategory, string> = {
-  prompt_injection: "#C2414B",
-  role_impersonation: "#7C3AED",
-  emotional_manipulation: "#C77700",
-  tool_abuse: "#C77700",
-  policy_extraction: "#0284C7",
-  multi_turn_escalation: "#C2414B",
-};
-
-const SEVERITY_BG: Record<Severity, string> = {
-  low: "rgba(122,125,133,0.12)",
-  medium: "rgba(199,119,0,0.12)",
-  high: "rgba(194,65,75,0.12)",
-  critical: "rgba(194,65,75,0.2)",
-};
-
-const SEVERITY_COLOR: Record<Severity, string> = {
-  low: "#7A7D85",
-  medium: "#C77700",
-  high: "#C2414B",
-  critical: "#C2414B",
-};
-
-const STATUS_STYLE: Record<string, { text: string; color: string }> = {
-  pending: { text: "PENDING", color: "#7A7D85" },
-  running: { text: "RUNNING", color: "#C77700" },
-  blocked: { text: "BLOCKED", color: "#2563EB" },
-  failed: { text: "FAILED", color: "#C2414B" },
-  passed: { text: "PASSED", color: "#21865A" },
-};
-
-function AttackQueuePanel({
-  attacks,
-  onAttackClick,
-}: {
-  attacks: AttackScenario[];
-  onAttackClick: (attackId: string) => void;
-}) {
-  return (
-    <div
-      className="flex flex-col gap-2"
-      style={{ background: "#F2F8FC", border: "1px solid #DCD8CC", borderRadius: "12px", padding: "12px" }}
-    >
-      <div className="flex items-center justify-between">
-        <span
-          className="text-[11px] font-bold tracking-widest uppercase"
-          style={{ color: "#7A7D85", letterSpacing: "0.08em" }}
-        >
-          Attack Queue
-        </span>
-        <span
-          className="text-[10px] font-semibold rounded-full px-2 py-0.5"
-          style={{ background: "#FDFDFD", color: "#7A7D85", border: "1px solid #DCD8CC" }}
-        >
-          {attacks.length}
-        </span>
-      </div>
-      <div className="flex flex-col gap-1">
-        {attacks.map((atk) => {
-          const dotColor = CATEGORY_COLORS[atk.category] || "#7A7D85";
-          const sevBg = SEVERITY_BG[atk.severity] || "rgba(122,125,133,0.12)";
-          const sevColor = SEVERITY_COLOR[atk.severity] || "#7A7D85";
-          const statusInfo = STATUS_STYLE[atk.status] || STATUS_STYLE.pending;
-          return (
-            <button
-              key={atk.id}
-              type="button"
-              onClick={() => onAttackClick(atk.id)}
-              className="w-full flex items-center rounded-lg transition-all text-left cursor-pointer"
-              style={{
-                height: "44px",
-                padding: "0 10px",
-                background: "#FDFDFD",
-                border: "1px solid #DCD8CC",
-              }}
-            >
-              <div
-                className="rounded flex-shrink-0"
-                style={{
-                  width: "10px",
-                  height: "10px",
-                  background: dotColor,
-                  opacity: 0.85,
-                  marginRight: "10px",
-                  borderRadius: "3px",
-                }}
-              />
-              <span className="text-[13px] font-medium truncate flex-1" style={{ color: "#1D1D1F" }}>
-                {atk.label}
-              </span>
-              <span
-                className="rounded-full text-[9px] font-bold uppercase tracking-wider px-2 py-0.5 flex-shrink-0"
-                style={{ background: sevBg, color: sevColor, marginRight: "8px" }}
-              >
-                {atk.severity}
-              </span>
-              <span className="text-[10px] font-semibold tracking-wider flex-shrink-0" style={{ color: statusInfo.color, width: "56px", textAlign: "right" }}>
-                {statusInfo.text}
-              </span>
-            </button>
-          );
-        })}
-        {attacks.length === 0 && (
-          <div className="py-4 text-center text-[12px]" style={{ color: "#7A7D85" }}>
-            No attacks yet. Run a wave to populate.
-          </div>
-        )}
-      </div>
-    </div>
-  );
+function getFailRate(metrics: RunMetrics): number {
+  return metrics.attacksTested > 0
+    ? Math.round((metrics.failed / metrics.attacksTested) * 100)
+    : 0;
 }
 
-/* -------------------------------------------------------------------------- */
-/*  EvaluationLogPanel                                                       */
-/* -------------------------------------------------------------------------- */
-
-function EvaluationLogPanel({
-  metrics,
-  currentWave,
-}: {
-  metrics: RunMetrics;
-  currentWave: number;
-}) {
-  const passRatio =
-    metrics.attacksTested > 0
-      ? Math.round((metrics.passed / metrics.attacksTested) * 100)
-      : 0;
-  const failRatio =
-    metrics.attacksTested > 0
-      ? Math.round((metrics.failed / metrics.attacksTested) * 100)
-      : 0;
-
-  return (
-    <div
-      className="flex flex-col gap-2"
-      style={{ background: "#F2F8FC", border: "1px solid #DCD8CC", borderRadius: "12px", padding: "12px" }}
-    >
-      <span
-        className="text-[11px] font-bold tracking-widest uppercase"
-        style={{ color: "#7A7D85", letterSpacing: "0.08em" }}
-      >
-        Evaluation Log
-      </span>
-      <div className="grid grid-cols-2 gap-2">
-        <div
-          className="rounded-lg px-3 py-2"
-          style={{ background: "#FDFDFD", border: "1px solid #DCD8CC" }}
-        >
-          <span className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "#7A7D85" }}>
-            Attacks Tested
-          </span>
-          <span className="text-[20px] font-bold font-mono block" style={{ color: "#1D1D1F", lineHeight: 1.2 }}>
-            {metrics.attacksTested}
-          </span>
-        </div>
-        <div
-          className="rounded-lg px-3 py-2"
-          style={{ background: "#FDFDFD", border: "1px solid #DCD8CC" }}
-        >
-          <span className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "#7A7D85" }}>
-            Current Wave
-          </span>
-          <span className="text-[20px] font-bold font-mono block" style={{ color: "#2563EB", lineHeight: 1.2 }}>
-            {currentWave}
-          </span>
-        </div>
-        <div
-          className="rounded-lg px-3 py-2"
-          style={{ background: "#FDFDFD", border: "1px solid #DCD8CC" }}
-        >
-          <span className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "#7A7D85" }}>
-            Pass Rate
-          </span>
-          <span className="text-[20px] font-bold font-mono block" style={{ color: "#21865A", lineHeight: 1.2 }}>
-            {passRatio}%
-          </span>
-        </div>
-        <div
-          className="rounded-lg px-3 py-2"
-          style={{ background: "#FDFDFD", border: "1px solid #DCD8CC" }}
-        >
-          <span className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "#7A7D85" }}>
-            Failure Rate
-          </span>
-          <span className="text-[20px] font-bold font-mono block" style={{ color: "#C2414B", lineHeight: 1.2 }}>
-            {failRatio}%
-          </span>
-        </div>
-      </div>
-    </div>
-  );
+function titleCase(value: string): string {
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
 }
 
-/* -------------------------------------------------------------------------- */
-/*  LatestPatchPanel                                                         */
-/* -------------------------------------------------------------------------- */
-
-function LatestPatchPanel({ patch }: { patch: PatchSummary | null }) {
-  if (!patch) {
-    return (
-      <div
-        className="flex flex-col gap-2"
-        style={{ background: "#F4F1F8", border: "1px solid #DCD8CC", borderRadius: "12px", padding: "12px" }}
-      >
-        <span
-          className="text-[11px] font-bold tracking-widest uppercase"
-          style={{ color: "#7A7D85", letterSpacing: "0.08em" }}
-        >
-          Latest Patch
-        </span>
-        <div className="rounded-lg flex items-center justify-center py-3" style={{ background: "#FDFDFD", border: "1px dashed #DCD8CC" }}>
-          <span className="text-[13px]" style={{ color: "#7A7D85" }}>
-            No patches applied
-          </span>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="flex flex-col gap-2"
-      style={{ background: "#F4F1F8", border: "1px solid #DCD8CC", borderRadius: "12px", padding: "12px" }}
-    >
-      <span
-        className="text-[11px] font-bold tracking-widest uppercase"
-        style={{ color: "#7A7D85", letterSpacing: "0.08em" }}
-      >
-        Latest Patch
-      </span>
-      <div className="rounded-lg px-3 py-2" style={{ background: "#FDFDFD", border: "1px solid #DCD8CC" }}>
-        <div className="flex items-center gap-2 mb-1.5">
-          <span
-            className="rounded-full text-[10px] font-bold px-2 py-0.5"
-            style={{ background: "rgba(124,58,237,0.12)", color: "#7C3AED" }}
-          >
-            {patch.patchType}
-          </span>
-          <div className="flex items-center gap-1">
-            <div className="rounded-full" style={{ width: "5px", height: "5px", background: "#21865A" }} />
-            <span className="text-[10px] font-semibold uppercase" style={{ color: "#21865A" }}>
-              Applied
-            </span>
-          </div>
-        </div>
-        <p className="text-[12px] leading-relaxed" style={{ color: "#575A60" }}>
-          {patch.addedRules[0] || patch.title}
-        </p>
-        <div className="flex gap-3 mt-1.5">
-          <span className="text-[11px] font-bold font-mono" style={{ color: "#21865A" }}>
-            +12% Survival
-          </span>
-          <span className="text-[11px] font-bold font-mono" style={{ color: "#21865A" }}>
-            -8% Damage
-          </span>
-        </div>
-      </div>
-    </div>
-  );
+function categoryColor(category: AttackCategory): string {
+  const colors: Record<AttackCategory, string> = {
+    prompt_injection: "#C2414B",
+    role_impersonation: "#7C3AED",
+    emotional_manipulation: "#C77700",
+    tool_abuse: "#0284C7",
+    policy_extraction: "#21865A",
+    multi_turn_escalation: "#C2414B",
+  };
+  return colors[category];
 }
 
-/* -------------------------------------------------------------------------- */
-/*  ArenaHeader                                                              */
-/* -------------------------------------------------------------------------- */
-
-function ArenaHeader({
-  label,
-  defender,
-  wave,
-  status,
-  elapsed,
-  accentColor,
-}: {
-  label: string;
-  defender: string;
-  wave: number;
-  status: string;
-  elapsed: string;
-  accentColor: string;
-}) {
-  const isActive =
-    status === "running_wave" || status === "patching" || status === "blocked" || status === "damaged";
-  const dotColor = isActive ? "#C77700" : status === "completed" ? "#21865A" : "#7A7D85";
-
-  return (
-    <div
-      className="flex items-center justify-between px-4 flex-shrink-0 rounded-xl"
-      style={{
-        height: "44px",
-        background: "#FAF9F6",
-        border: "1px solid #DCD8CC",
-      }}
-    >
-      <div className="flex items-center gap-2.5">
-        <span className="relative flex h-2 w-2">
-          <span
-            className="absolute inline-flex h-full w-full rounded-full opacity-75"
-            style={{
-              background: dotColor,
-              animation: isActive ? "ping 1.5s cubic-bezier(0,0,0.2,1) infinite" : "none",
-            }}
-          />
-          <span className="relative inline-flex rounded-full h-2 w-2" style={{ background: dotColor }} />
-        </span>
-        <span className="text-[12px] font-bold tracking-tight" style={{ color: "#1D1D1F" }}>
-          {label}
-        </span>
-        <span className="text-[10px] font-medium px-1.5 py-0.5 rounded" style={{ background: `${accentColor}12`, color: accentColor }}>
-          {defender}
-        </span>
-      </div>
-
-      <div className="flex items-center gap-4">
-        <span className="text-[13px] font-bold font-mono" style={{ color: accentColor }}>
-          Wave {String(wave).padStart(2, "0")}
-        </span>
-        <span className="text-[10px] font-mono font-semibold uppercase tracking-wider" style={{ color: dotColor }}>
-          {status === "idle" ? "IDLE" : status === "running_wave" ? "RUNNING" : status === "completed" ? "COMPLETE" : status === "collapsed" ? "COLLAPSED" : status.toUpperCase()}
-        </span>
-      </div>
-
-      <div
-        className="text-[11px] font-medium truncate max-w-[280px]"
-        style={{ color: "#7A7D85" }}
-        title={elapsed}
-      >
-        {elapsed}
-      </div>
-    </div>
-  );
+function statusColor(status: AttackStatus): string {
+  const colors: Record<AttackStatus, string> = {
+    pending: "#7A7D85",
+    running: "#C77700",
+    blocked: "#0284C7",
+    failed: "#C2414B",
+    passed: "#21865A",
+  };
+  return colors[status];
 }
 
-/* -------------------------------------------------------------------------- */
-/*  ArenaSpeedControls                                                       */
-/* -------------------------------------------------------------------------- */
-
-function ArenaSpeedControls({
-  speed,
-  onSpeedChange,
-}: {
-  speed: number;
-  onSpeedChange: (s: number) => void;
-}) {
-  const speeds = [0.5, 1, 2, 4];
-  return (
-    <div
-      className="flex items-center gap-2 px-3 py-1.5 rounded-lg self-start"
-      style={{ background: "#FAF9F6", border: "1px solid #DCD8CC" }}
-    >
-      <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "#7A7D85" }}>
-        Speed
-      </span>
-      {speeds.map((s) => (
-        <button
-          key={s}
-          type="button"
-          onClick={() => onSpeedChange(s)}
-          className="rounded px-2 py-0.5 text-[11px] font-semibold font-mono transition-all"
-          style={{
-            background: speed === s ? "#1D1D1F" : "transparent",
-            color: speed === s ? "#FFFFFF" : "#575A60",
-          }}
-        >
-          {s}x
-        </button>
-      ))}
-    </div>
-  );
+function downloadJson(filename: string, data: unknown) {
+  downloadText(filename, JSON.stringify(data, null, 2), "application/json");
 }
 
-/* -------------------------------------------------------------------------- */
-/*  WaveLadder (Light Mode)                                                  */
-/* -------------------------------------------------------------------------- */
-
-function WaveLadder({
-  waves,
-  currentWave,
-  accentColor,
-}: {
-  waves: WaveDefinition[];
-  currentWave: number;
-  accentColor: string;
-}) {
-  return (
-    <div
-      className="rounded-xl flex flex-col"
-      style={{
-        background: "#FAF9F6",
-        border: "1px solid #DCD8CC",
-        padding: "12px",
-        gap: "8px",
-      }}
-    >
-      <span
-        className="text-[11px] font-bold tracking-widest uppercase"
-        style={{ color: "#7A7D85", letterSpacing: "0.08em" }}
-      >
-        Wave Ladder
-      </span>
-      <div className="flex items-center gap-2">
-        {waves.map((wave, idx) => {
-          const isActive = wave.waveNumber === currentWave;
-          const isPast = wave.waveNumber < currentWave;
-          const isBoss = wave.isBossWave;
-          return (
-            <div key={wave.waveNumber} className="flex items-center gap-2 flex-1">
-              <div
-                className="flex-1 rounded-lg flex flex-col items-center py-2 transition-all"
-                style={{
-                  background: isActive
-                    ? `${accentColor}12`
-                    : isPast
-                      ? "rgba(33, 134, 90, 0.06)"
-                      : "#FDFDFD",
-                  border: isActive
-                    ? `1px solid ${accentColor}50`
-                    : isBoss
-                      ? "1px solid rgba(194, 65, 75, 0.2)"
-                      : "1px solid #DCD8CC",
-                }}
-              >
-                <span
-                  className="text-[13px] font-bold font-mono"
-                  style={{
-                    color: isActive
-                      ? accentColor
-                      : isPast
-                        ? "#21865A"
-                        : "#7A7D85",
-                  }}
-                >
-                  {wave.waveNumber}
-                </span>
-                <span
-                  className="text-[9px] uppercase tracking-wider font-semibold mt-0.5"
-                  style={{
-                    color: isBoss
-                      ? "#C2414B"
-                      : isActive
-                        ? accentColor
-                        : "#7A7D85",
-                  }}
-                >
-                  {isBoss ? "BOSS" : wave.harnessCount + " atk"}
-                </span>
-              </div>
-              {idx < waves.length - 1 && (
-                <div style={{ width: "8px", height: "1px", background: "#DCD8CC", flexShrink: 0 }} />
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*  BottomMetricsRow (Light Mode)                                            */
-/* -------------------------------------------------------------------------- */
-
-function BottomMetricsRow({ metrics }: { metrics: RunMetrics }) {
-  const totalReward = Math.round(metrics.robustnessGain * 10);
-  const survivalTime = metrics.attacksTested * 4;
-  const winRatePct = Math.round(
-    (metrics.passed / Math.max(metrics.attacksTested, 1)) * 100,
-  );
-  const damageTaken = metrics.failed;
-
-  const items = [
-    { label: "Total Reward", value: totalReward, suffix: "pts", color: "#21865A" },
-    { label: "Survival Time", value: survivalTime, suffix: "s", color: "#0284C7" },
-    { label: "Win Rate", value: winRatePct, suffix: "%", color: "#21865A" },
-    { label: "Damage Taken", value: damageTaken, suffix: "hits", color: "#C2414B" },
-  ];
-
-  return (
-    <div className="grid grid-cols-4 gap-3">
-      {items.map((item) => (
-        <div
-          key={item.label}
-          className="rounded-xl p-3 flex flex-col gap-1"
-          style={{ background: "#FAF9F6", border: "1px solid #DCD8CC" }}
-        >
-          <span
-            className="text-[10px] uppercase tracking-wider font-semibold"
-            style={{ color: "#7A7D85" }}
-          >
-            {item.label}
-          </span>
-          <div className="flex items-baseline gap-1">
-            <span
-              className="font-bold font-mono"
-              style={{ fontSize: "22px", color: item.color, lineHeight: 1.1 }}
-            >
-              {item.value}
-            </span>
-            <span className="text-[12px] font-mono" style={{ color: "#7A7D85" }}>
-              {item.suffix}
-            </span>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/* -------------------------------------------------------------------------- */
-/*  ExportAndNextWavePanel (Light Mode)                                       */
-/* -------------------------------------------------------------------------- */
-
-function ExportAndNextWavePanel({
-  onRunWave,
-  onExportAgent,
-  onExportReport,
-  onExportBundle,
-  isRunning,
-  accentColor,
-}: {
-  onRunWave: () => void;
-  onExportAgent: () => void;
-  onExportReport: () => void;
-  onExportBundle: () => void;
-  isRunning: boolean;
-  accentColor: string;
-}) {
-  return (
-    <div className="grid grid-cols-2 gap-3">
-      {/* Export panel */}
-      <div
-        className="rounded-xl p-4 flex flex-col gap-3"
-        style={{ background: "#FAF9F6", border: "1px solid #DCD8CC" }}
-      >
-        <span
-          className="text-[10px] font-semibold uppercase tracking-wider"
-          style={{ color: "#7A7D85" }}
-        >
-          Export & Share
-        </span>
-        <div className="flex flex-col gap-2">
-          <ExportButton label="Export Agent" onClick={onExportAgent} color={accentColor} />
-          <ExportButton label="Export Report" onClick={onExportReport} color="#21865A" />
-          <ExportButton label="Export Bundle" onClick={onExportBundle} color="#0284C7" />
-        </div>
-      </div>
-
-      {/* Next Wave panel */}
-      <div
-        className="rounded-xl p-4 flex flex-col gap-3"
-        style={{ background: "#FAF9F6", border: "1px solid #DCD8CC" }}
-      >
-        <span
-          className="text-[10px] font-semibold uppercase tracking-wider"
-          style={{ color: "#7A7D85" }}
-        >
-          Next Wave
-        </span>
-        <p className="text-[12px]" style={{ color: "#575A60", margin: 0, lineHeight: 1.5 }}>
-          Run the next wave of adversarial attacks against the current agent
-          generation.
-        </p>
-        <button
-          onClick={onRunWave}
-          disabled={isRunning}
-          className="w-full rounded-lg font-bold text-base transition-all disabled:cursor-not-allowed"
-          style={{
-            height: "48px",
-            background: isRunning ? `${accentColor}60` : accentColor,
-            color: "#FFFFFF",
-            border: "none",
-            opacity: isRunning ? 0.6 : 1,
-          }}
-        >
-          {isRunning ? "Running..." : "Run Wave"}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function ExportButton({
-  label,
-  onClick,
-  color,
-}: {
-  label: string;
-  onClick: () => void;
-  color: string;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className="w-full flex items-center gap-3 rounded-lg text-sm font-medium transition-all hover:opacity-80 px-3"
-      style={{
-        height: "40px",
-        background: "#FDFDFD",
-        border: "1px solid #DCD8CC",
-        color: "#575A60",
-      }}
-    >
-      <span
-        className="rounded flex-shrink-0"
-        style={{
-          width: "14px",
-          height: "14px",
-          background: color,
-          opacity: 0.7,
-        }}
-      />
-      <span>{label}</span>
-    </button>
-  );
+function downloadText(filename: string, content: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }
