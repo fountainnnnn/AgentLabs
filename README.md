@@ -2,6 +2,8 @@
 
 **Adversarial hardening for AI agents and small open-weight models.**
 
+**Live demo:** https://agentlabs-production-efd2.up.railway.app/ (offline mock mode, free to use)
+
 AgentLabs runs an adversarial improvement loop and shows it as a live battle arena:
 
 1. **Attack** a target with adversarial prompts (prompt injection, false authority, emotional pressure,
