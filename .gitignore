@@ -1,11 +1,46 @@
+# Dependencies and builds
 node_modules/
-.next/
-*.db
+dist/
+frontend/dist/
+*.tsbuildinfo
+
+# Python
 __pycache__/
-*.pyc
-.env
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime data: database, artifacts, datasets, checkpoints
+.agentlabs/
+*.db
+*.sqlite
 exports/
+artifacts/
+.models/
+models/
+checkpoints/
+lora_checkpoints/
+*.safetensors
+*.bin
+*.pt
+*.gguf
+
+# Test output and screenshots
+test-results/
+playwright-report/
+*.png.diff
+/screenshots/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+
+# Editors and OS
 .vscode/
 .idea/
-*.egg-info/
-dist/
+.DS_Store
