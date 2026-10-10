@@ -196,15 +196,17 @@ async def run_training(run_id: str, samples: list[dict[str, Any]], target: dict[
 
 async def eval_comparison(training_run_id: str) -> dict[str, Any] | None:
     """Latest baseline vs checkpoint evaluation linked to a training run."""
-    runs = await run_store.list_runs(kind="model_eval", limit=500)
-    checkpoint = next((r for r in runs if r["parent_run_id"] == training_run_id and r["summary"].get("phase") == "checkpoint"
-                       and r["status"] == "completed"), None)
+    training = await run_store.get_run(training_run_id)
+    if training is None:
+        return None
+    runs = await run_store.list_runs(kind="model_eval", limit=200, parent_run_id=training_run_id)
+    checkpoint = next((r for r in runs if r["summary"].get("phase") == "checkpoint" and r["status"] == "completed"), None)
     if checkpoint is None:
         return None
-    baseline_id = checkpoint["config"].get("baseline_run_id")
-    baseline = next((r for r in runs if r["id"] == baseline_id), None)
-    if baseline is None:
+    baseline_run = await run_store.get_run(checkpoint["config"].get("baseline_run_id") or "", owner=training.owner_id)
+    if baseline_run is None or baseline_run.status != "completed":
         return None
+    baseline = run_store.run_dict(baseline_run)
     before = [r for r in await run_store.list_case_results(baseline["id"])]
     after = [r for r in await run_store.list_case_results(checkpoint["id"])]
     after_by = {r["case_id"]: r for r in after}

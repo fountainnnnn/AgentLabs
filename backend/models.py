@@ -25,6 +25,7 @@ class Run(Base):
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
     kind: Mapped[str] = mapped_column(String, index=True)
+    owner_id: Mapped[str] = mapped_column(String, index=True, default="")
     name: Mapped[str] = mapped_column(String)
     status: Mapped[str] = mapped_column(String, default="queued")  # queued, running, completed, failed
     provider: Mapped[str] = mapped_column(String, default="mock")
@@ -107,6 +108,7 @@ class Dataset(Base):
     __tablename__ = "datasets"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, index=True, default="")
     name: Mapped[str] = mapped_column(String)
     source: Mapped[str] = mapped_column(String)  # demo, upload
     samples: Mapped[list] = mapped_column(JSON, default=list)
@@ -117,6 +119,7 @@ class AgentConfig(Base):
     __tablename__ = "agent_configs"
 
     id: Mapped[str] = mapped_column(String, primary_key=True)
+    owner_id: Mapped[str] = mapped_column(String, index=True, default="")
     name: Mapped[str] = mapped_column(String)
     source: Mapped[str] = mapped_column(String)  # demo, upload
     config: Mapped[dict] = mapped_column(JSON, default=dict)

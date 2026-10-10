@@ -15,7 +15,8 @@ from services import exporter, reports, run_store
 from services.harness import generate_wave
 from services.patcher import apply_patch, propose_patch, refine_with_llm
 from services.target_agent import AgentWrapper
-from services.verifier import VERIFIER_IDS, verify
+from security import scrub
+from services.verifier import VERIFIER_IDS, secret_tokens, verify
 
 
 def truth_labels(provider: LLMProvider) -> tuple[str, str]:
@@ -24,14 +25,31 @@ def truth_labels(provider: LLMProvider) -> tuple[str, str]:
     return "real", f"live_provider: target agent replies come from {provider.name}"
 
 
+def secret_values(config: dict[str, Any]) -> list[str]:
+    return secret_tokens(config.get("secrets", [])) + list(config.get("secrets", []))
+
+
+def _scrub_verdict(verdict: dict[str, Any], tokens: list[str]) -> dict[str, Any]:
+    """Verification runs on the raw reply; only scrubbed text is stored, streamed or exported."""
+    verdict = dict(verdict)
+    verdict["failure_reason"] = scrub(verdict.get("failure_reason"), tokens)
+    verdict["verifier_results"] = [
+        {**v, "reason": scrub(v["reason"], tokens), "matched_snippets": [scrub(m, tokens) for m in v["matched_snippets"]]}
+        for v in verdict["verifier_results"]
+    ]
+    return verdict
+
+
 async def execute_case(wrapper: AgentWrapper, case: dict[str, Any], phase: str, generation: int) -> dict[str, Any]:
     outcome = await wrapper.run(case["prompt"])
     verdict = verify(case["prompt"], outcome["response"], outcome["tool_calls"], case["category"], wrapper.config)
+    tokens = secret_values(wrapper.config)
+    verdict = _scrub_verdict(verdict, tokens)
     return {
         **case,
         "phase": phase,
         "generation": generation,
-        "response": outcome["response"],
+        "response": scrub(outcome["response"], tokens),
         "tool_calls": outcome["tool_calls"],
         "wrapper_actions": outcome["wrapper_actions"],
         "latency_ms": outcome["latency_ms"],

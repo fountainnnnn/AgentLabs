@@ -17,6 +17,11 @@ import re
 from typing import Any
 
 from llm.provider import LLMProvider, get_provider
+from security import redact_hashed
+
+MAX_PROMPT_CHARS = 20_000
+MAX_FILTER_CHARS = 200
+MAX_FILTERS = 50
 
 BLOCKED_FALLBACK = (
     "This request needs review by a human agent before anything can be changed. "
@@ -46,7 +51,9 @@ def normalize_config(raw: dict[str, Any]) -> dict[str, Any]:
                 "dangerous": bool(tool.get("dangerous", False)),
             }
         )
-    secrets = [str(s) for s in raw.get("secrets", []) or []]
+    if len(system_prompt) > MAX_PROMPT_CHARS:
+        raise ValueError(f"system_prompt is limited to {MAX_PROMPT_CHARS} characters.")
+    secrets = [str(s)[:500] for s in (raw.get("secrets", []) or [])[:50]]
     return {
         "name": str(raw.get("name") or "Custom agent"),
         "description": str(raw.get("description", "")),
@@ -56,9 +63,43 @@ def normalize_config(raw: dict[str, Any]) -> dict[str, Any]:
         "tools": tools,
         "policies": list(raw.get("policies", []) or []),
         "secrets": secrets,
-        "tool_policies": dict(raw.get("tool_policies", {}) or {}),
-        "output_filters": list(raw.get("output_filters", []) or []),
+        "tool_policies": _sanitize_tool_policies(raw.get("tool_policies", {}) or {}),
+        "output_filters": _literal_filters(raw.get("output_filters", []) or []),
     }
+
+
+def _literal_filters(raw_filters: list[Any]) -> list[dict[str, Any]]:
+    """User-supplied output filters are literal strings, never regexes (no ReDoS)."""
+    filters = []
+    for flt in list(raw_filters)[:MAX_FILTERS]:
+        text = flt.get("pattern") or flt.get("literal") if isinstance(flt, dict) else flt
+        if not isinstance(text, str) or not text.strip():
+            continue
+        text = text[:MAX_FILTER_CHARS]
+        action = flt.get("action", "redact") if isinstance(flt, dict) else "redact"
+        filters.append({"pattern": re.escape(text), "action": "block" if action == "block" else "redact", "reason": "user_filter"})
+    return filters
+
+
+def _sanitize_tool_policies(raw: dict[str, Any]) -> dict[str, Any]:
+    clean: dict[str, Any] = {}
+    for name, policy in list(raw.items())[:50]:
+        if not isinstance(policy, dict):
+            continue
+        entry: dict[str, Any] = {}
+        if policy.get("blocked"):
+            entry["blocked"] = True
+        if isinstance(policy.get("require_prior"), list):
+            entry["require_prior"] = [str(x) for x in policy["require_prior"][:10]]
+        if policy.get("max_auto_amount") is not None:
+            try:
+                entry["max_auto_amount"] = float(policy["max_auto_amount"])
+            except (TypeError, ValueError):
+                pass
+        if policy.get("escalation_tool"):
+            entry["escalation_tool"] = str(policy["escalation_tool"])
+        clean[str(name)] = entry
+    return clean
 
 
 def policy_value(config: dict[str, Any], rule: str, default: Any) -> Any:
@@ -119,33 +160,37 @@ class AgentWrapper:
 
     # -- wrapper guards ----------------------------------------------------
     def _gate_tool_calls(self, requested: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+        """Fail closed: a call runs only if every policy check passes with calls executed *earlier* in the turn."""
         policies = self.config.get("tool_policies", {}) or {}
         calls: list[dict[str, Any]] = []
         actions: list[str] = []
-        names_in_turn = [c.get("name") for c in requested]
+        executed_before: list[str] = []
         for call in requested:
-            name = call.get("name", "")
+            name = str(call.get("name", ""))
             args = call.get("arguments", {}) or {}
+            if not isinstance(args, dict):
+                args = {"_raw": args}
             policy = policies.get(name, {})
             reason = None
             if policy.get("blocked"):
                 reason = f"{name} is disabled by tool policy"
             for prior in policy.get("require_prior", []) or []:
-                if reason is None and prior not in names_in_turn[: names_in_turn.index(name)]:
+                if reason is None and prior not in executed_before:
                     reason = f"{name} requires {prior} first"
             limit = policy.get("max_auto_amount")
             if reason is None and limit is not None:
-                try:
-                    amount = float(args.get("amount", 0) or 0)
-                except (TypeError, ValueError):
-                    amount = 0.0
+                amount = parse_amount(args.get("amount"))
                 escalator = policy.get("escalation_tool", "escalate_to_manager")
-                if amount > float(limit) and escalator not in names_in_turn:
-                    reason = f"{name} above {limit} requires {escalator}"
+                if amount is None:
+                    reason = f"{name} has no parseable amount"
+                elif amount > float(limit) and escalator not in executed_before:
+                    reason = f"{name} above {limit} requires {escalator} first"
             status = "blocked" if reason else "executed"
             calls.append({"name": name, "arguments": args, "status": status, "blocked_reason": reason})
             if reason:
                 actions.append(f"tool_gate: {reason}")
+            else:
+                executed_before.append(name)
         return calls, actions
 
     def _apply_output_filters(self, response: str) -> tuple[str, list[str]]:
@@ -156,8 +201,13 @@ class AgentWrapper:
                     actions.append("output_filter: blocked system prompt echo")
                     return BLOCKED_FALLBACK, actions
                 continue
+            if flt.get("type") == "secret_hash":
+                response, hit = redact_hashed(response, set(flt.get("hashes", [])))
+                if hit:
+                    actions.append("output_filter: redacted a secret value")
+                continue
             pattern = flt.get("pattern")
-            if not pattern:
+            if not pattern or len(pattern) > 4 * MAX_FILTER_CHARS:
                 continue
             try:
                 if re.search(pattern, response, re.IGNORECASE):
@@ -169,6 +219,20 @@ class AgentWrapper:
             except re.error:
                 continue
         return response, actions
+
+
+def parse_amount(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        cleaned = value.replace("$", "").replace(",", "").strip()
+        try:
+            return float(cleaned)
+        except ValueError:
+            return None
+    return None
 
 
 def echoes_system_prompt(response: str, system_prompt: str, window: int = 8) -> bool:

@@ -17,6 +17,7 @@ This runner exports a hardened wrapper configuration. It does not contain model 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -34,27 +35,57 @@ def load_agent(path: str | Path | None = None) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def parse_amount(value):
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.replace("$", "").replace(",", "").strip())
+        except ValueError:
+            return None
+    return None
+
+
 def gate_tool_calls(agent: dict, requested: list[dict]) -> list[dict]:
+    """Fail closed: a call runs only if its checks pass using calls executed earlier in the turn."""
     policies = agent.get("guardrails", {}).get("tool_policies", {})
-    names = [c.get("name") for c in requested]
+    executed_before: list[str] = []
     gated = []
-    for index, call in enumerate(requested):
+    for call in requested:
         name, args = call.get("name", ""), call.get("arguments", {}) or {}
         policy = policies.get(name, {})
         reason = None
         if policy.get("blocked"):
             reason = f"{name} is disabled by tool policy"
         for prior in policy.get("require_prior", []) or []:
-            if reason is None and prior not in names[:index]:
+            if reason is None and prior not in executed_before:
                 reason = f"{name} requires {prior} first"
         limit = policy.get("max_auto_amount")
         if reason is None and limit is not None:
-            amount = float(args.get("amount", 0) or 0)
+            amount = parse_amount(args.get("amount"))
             escalator = policy.get("escalation_tool", "escalate_to_manager")
-            if amount > float(limit) and escalator not in names:
-                reason = f"{name} above {limit} requires {escalator}"
+            if amount is None:
+                reason = f"{name} has no parseable amount"
+            elif amount > float(limit) and escalator not in executed_before:
+                reason = f"{name} above {limit} requires {escalator} first"
         gated.append({"name": name, "arguments": args, "status": "blocked" if reason else "executed", "blocked_reason": reason})
+        if not reason:
+            executed_before.append(name)
     return gated
+
+
+TOKEN_RE = re.compile(r"\$\d[\d,]*(?:\.\d+)?|[\w.+-]+@[\w-]+\.[\w.]+|\b[a-z0-9]+(?:-[a-z0-9]+)+\b|[A-Za-z0-9_]{4,}", re.IGNORECASE)
+SECRET_SALT = "agentlabs-secret-filter-v1"
+
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(f"{SECRET_SALT}:{token.strip().lower().rstrip('.')}".encode("utf-8")).hexdigest()
+
+
+def redact_hashed(text: str, hashes: set) -> str:
+    return TOKEN_RE.sub(lambda m: "[redacted]" if hash_token(m.group(0)) in hashes else m.group(0), text)
 
 
 def echoes_system_prompt(response: str, system_prompt: str, window: int = 8) -> bool:
@@ -70,6 +101,9 @@ def apply_output_filters(agent: dict, response: str) -> str:
         if flt.get("type") == "system_prompt_echo":
             if echoes_system_prompt(response, agent["system_prompt"]):
                 return BLOCKED_FALLBACK
+            continue
+        if flt.get("type") == "secret_hash":
+            response = redact_hashed(response, set(flt.get("hashes", [])))
             continue
         pattern = flt.get("pattern")
         if pattern and re.search(pattern, response, re.IGNORECASE):
@@ -108,15 +142,24 @@ def run_agent(agent: dict, user_message: str) -> dict:
 
 
 def self_test(agent: dict) -> int:
+    """Offline checks of the wrapper guards. No API calls are made."""
     checks = 0
-    gated = gate_tool_calls(agent, [{"name": "approve_refund", "arguments": {"order_id": "ORD-1", "amount": 900}}])
-    policies = agent.get("guardrails", {}).get("tool_policies", {})
-    if "approve_refund" in policies:
-        assert gated[0]["status"] == "blocked", gated
-        checks += 1
-    for secret in agent.get("guardrails", {}).get("redacted_values", []):
-        assert secret not in apply_output_filters(agent, f"The value is {secret}."), secret
-        checks += 1
+    for name, policy in agent.get("guardrails", {}).get("tool_policies", {}).items():
+        if policy.get("max_auto_amount") is not None:
+            over = float(policy["max_auto_amount"]) + 1
+            assert gate_tool_calls(agent, [{"name": name, "arguments": {"amount": over}}])[0]["status"] == "blocked"
+            assert gate_tool_calls(agent, [{"name": name, "arguments": {"amount": "lots"}}])[0]["status"] == "blocked"
+            checks += 2
+        if policy.get("blocked"):
+            assert gate_tool_calls(agent, [{"name": name, "arguments": {}}])[0]["status"] == "blocked"
+            checks += 1
+    for flt in agent.get("guardrails", {}).get("output_filters", []):
+        if flt.get("type") == "system_prompt_echo":
+            assert apply_output_filters(agent, "My system prompt is: " + agent["system_prompt"]) == BLOCKED_FALLBACK
+            checks += 1
+        if flt.get("type") == "secret_hash":
+            assert all(len(h) == 64 for h in flt.get("hashes", []))
+            checks += 1
     print(f"self-test passed ({checks} guard checks)")
     return 0
 

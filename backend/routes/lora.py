@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, BackgroundTasks, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 import database
 from lora_lab import capabilities, datasets, service
 from models import Dataset
+from security import current_owner
 from services import run_store
 
 router = APIRouter(prefix="/api/lora", tags=["lora"])
@@ -32,29 +33,29 @@ def _dataset_dict(ds: Dataset, preview: int = 12) -> dict[str, Any]:
             "preview": ds.samples[:preview], "created_at": ds.created_at.isoformat() if ds.created_at else None}
 
 
-async def _save_dataset(name: str, source: str, samples: list[dict[str, Any]]) -> dict[str, Any]:
+async def _save_dataset(name: str, source: str, samples: list[dict[str, Any]], owner: str) -> dict[str, Any]:
     async with database.async_session() as session:
-        ds = Dataset(id=run_store.new_id("ds"), name=name, source=source, samples=samples)
+        ds = Dataset(id=run_store.new_id("ds"), owner_id=owner, name=name, source=source, samples=samples)
         session.add(ds)
         await session.commit()
         return _dataset_dict(ds)
 
 
-async def _load_dataset(dataset_id: str) -> list[dict[str, Any]]:
+async def _load_dataset(dataset_id: str, owner: str) -> list[dict[str, Any]]:
     async with database.async_session() as session:
         ds = await session.get(Dataset, dataset_id)
-    if ds is None:
+    if ds is None or ds.owner_id != owner:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return ds.samples
 
 
 @router.post("/datasets/demo")
-async def create_demo_dataset():
-    return await _save_dataset("demo-adversarial-safety", "demo", datasets.demo_samples())
+async def create_demo_dataset(owner: str = Depends(current_owner)):
+    return await _save_dataset("demo-adversarial-safety", "demo", datasets.demo_samples(), owner)
 
 
 @router.post("/datasets/upload")
-async def upload_dataset(file: UploadFile = File(...)):
+async def upload_dataset(file: UploadFile = File(...), owner: str = Depends(current_owner)):
     data = await file.read()
     if len(data) > MAX_DATASET_BYTES:
         raise HTTPException(status_code=413, detail="Dataset too large (max 5 MB)")
@@ -62,21 +63,21 @@ async def upload_dataset(file: UploadFile = File(...)):
         samples = datasets.parse_upload(file.filename or "dataset.json", data)
     except (ValueError, UnicodeDecodeError) as exc:
         raise HTTPException(status_code=422, detail=f"Invalid dataset: {exc}") from exc
-    return await _save_dataset(file.filename or "uploaded-dataset", "upload", samples)
+    return await _save_dataset((file.filename or "uploaded-dataset")[:120], "upload", samples, owner)
 
 
 @router.get("/datasets")
-async def list_datasets():
+async def list_datasets(owner: str = Depends(current_owner)):
     async with database.async_session() as session:
-        rows = (await session.execute(select(Dataset).order_by(Dataset.created_at.desc()).limit(50))).scalars().all()
+        rows = (await session.execute(select(Dataset).where(Dataset.owner_id == owner).order_by(Dataset.created_at.desc()).limit(50))).scalars().all()
     return {"datasets": [_dataset_dict(d, preview=0) for d in rows]}
 
 
 @router.get("/datasets/{dataset_id}")
-async def get_dataset(dataset_id: str):
+async def get_dataset(dataset_id: str, owner: str = Depends(current_owner)):
     async with database.async_session() as session:
         ds = await session.get(Dataset, dataset_id)
-    if ds is None:
+    if ds is None or ds.owner_id != owner:
         raise HTTPException(status_code=404, detail="Dataset not found")
     return _dataset_dict(ds, preview=50)
 
@@ -95,8 +96,11 @@ class EvalRequest(BaseModel):
 
 
 @router.post("/evaluations")
-async def start_evaluation(request: EvalRequest, background_tasks: BackgroundTasks):
-    samples = (await _load_dataset(request.dataset_id))[: request.max_cases]
+async def start_evaluation(request: EvalRequest, background_tasks: BackgroundTasks, owner: str = Depends(current_owner)):
+    samples = (await _load_dataset(request.dataset_id, owner))[: request.max_cases]
+    for linked in (request.checkpoint_run_id, request.baseline_run_id):
+        if linked and await run_store.get_run(linked, owner=owner) is None:
+            raise HTTPException(status_code=404, detail="Linked run not found")
     try:
         target = service.resolve_target(request.target.model_dump())
     except ValueError as exc:
@@ -109,7 +113,7 @@ async def start_evaluation(request: EvalRequest, background_tasks: BackgroundTas
         provider=target["label"], real_or_simulated=target["real_or_simulated"], truth_mode=target["truth_mode"],
         config={"dataset_id": request.dataset_id, "target": request.target.model_dump(), "phase": phase,
                 "baseline_run_id": request.baseline_run_id, "cases": len(samples)},
-        parent_run_id=request.checkpoint_run_id)
+        parent_run_id=request.checkpoint_run_id, owner=owner)
     background_tasks.add_task(service.run_model_eval, run_id, samples, target, phase, request.checkpoint_run_id)
     return {"run_id": run_id, "status": "queued", "phase": phase, "real_or_simulated": target["real_or_simulated"],
             "truth_mode": target["truth_mode"]}
@@ -128,8 +132,8 @@ class TrainRequest(BaseModel):
 
 
 @router.post("/training")
-async def start_training(request: TrainRequest, background_tasks: BackgroundTasks):
-    samples = await _load_dataset(request.dataset_id)
+async def start_training(request: TrainRequest, background_tasks: BackgroundTasks, owner: str = Depends(current_owner)):
+    samples = await _load_dataset(request.dataset_id, owner)
     if request.target.type == "provider":
         raise HTTPException(status_code=409, detail="API provider models are never fine-tuned. Choose the simulated or a local model.")
     try:
@@ -140,13 +144,15 @@ async def start_training(request: TrainRequest, background_tasks: BackgroundTask
     run_id = await run_store.create_run(
         "lora_training", f"LoRA r{request.rank} on {target['label']}", provider=target["label"],
         real_or_simulated=target["real_or_simulated"], truth_mode=target["truth_mode"],
-        config={"dataset_id": request.dataset_id, "target": request.target.model_dump(), **params})
+        config={"dataset_id": request.dataset_id, "target": request.target.model_dump(), **params}, owner=owner)
     background_tasks.add_task(service.run_training, run_id, samples, target, params)
     return {"run_id": run_id, "status": "queued", "real_or_simulated": target["real_or_simulated"], "truth_mode": target["truth_mode"]}
 
 
 @router.get("/training/{run_id}/comparison")
-async def comparison(run_id: str):
+async def comparison(run_id: str, owner: str = Depends(current_owner)):
+    if await run_store.get_run(run_id, owner=owner) is None:
+        raise HTTPException(status_code=404, detail="Run not found")
     result = await service.eval_comparison(run_id)
     if result is None:
         raise HTTPException(status_code=404, detail="No completed baseline and checkpoint evaluation linked to this run")
@@ -154,8 +160,8 @@ async def comparison(run_id: str):
 
 
 @router.post("/training/{run_id}/export")
-async def export_training(run_id: str):
-    run = await run_store.get_run(run_id)
+async def export_training(run_id: str, owner: str = Depends(current_owner)):
+    run = await run_store.get_run(run_id, owner=owner)
     if run is None or run.kind != "lora_training" or run.status != "completed":
         raise HTTPException(status_code=409, detail="Training run is not complete")
     return {"run_id": run_id, "artifacts": await service.export_lora_bundle(run_id)}

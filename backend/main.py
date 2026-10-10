@@ -18,6 +18,8 @@ from lora_lab.capabilities import capabilities
 from routes.hardening import router as hardening_router
 from routes.lora import router as lora_router
 from routes.runs import router as runs_router
+from routes.session import router as session_router
+from security import auth_required, owner_and_auth_middleware
 
 VERSION = "1.0.0"
 
@@ -36,6 +38,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.middleware("http")(owner_and_auth_middleware)
+app.include_router(session_router)
 app.include_router(runs_router)
 app.include_router(hardening_router)
 app.include_router(lora_router)
@@ -56,6 +60,7 @@ async def health():
         "llm": provider_status(),
         "lora_mode": caps["mode"],
         "lora_dependencies": caps["dependencies"],
+        "auth_required": auth_required(),
     }
 
 

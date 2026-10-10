@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o-mini"
     llm_timeout_seconds: float = 60.0
 
+    # Access control: required for any /api call when set, and mandatory with a live provider.
+    agentlabs_access_token: str = ""
+
     # Storage ----------------------------------------------------------------
     agentlabs_data_dir: str = str(REPO_ROOT / ".agentlabs")
     database_url: str = ""

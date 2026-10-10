@@ -25,10 +25,10 @@ def run_dir(run_id: str) -> Path:
 
 
 async def create_run(kind: str, name: str, *, provider: str, real_or_simulated: str, truth_mode: str,
-                     config: dict[str, Any], parent_run_id: str | None = None) -> str:
+                     config: dict[str, Any], parent_run_id: str | None = None, owner: str = "") -> str:
     run_id = new_id("run")
     async with database.async_session() as session:
-        session.add(Run(id=run_id, kind=kind, name=name, status="queued", provider=provider,
+        session.add(Run(id=run_id, kind=kind, owner_id=owner, name=name, status="queued", provider=provider,
                         real_or_simulated=real_or_simulated, truth_mode=truth_mode, config=config,
                         summary={}, parent_run_id=parent_run_id))
         await session.commit()
@@ -47,9 +47,13 @@ async def update_run(run_id: str, **fields: Any) -> None:
         await session.commit()
 
 
-async def get_run(run_id: str) -> Run | None:
+async def get_run(run_id: str, owner: str | None = None) -> Run | None:
+    """Fetch a run. With ``owner`` set, runs of other owners are treated as missing."""
     async with database.async_session() as session:
-        return await session.get(Run, run_id)
+        run = await session.get(Run, run_id)
+    if run is not None and owner is not None and run.owner_id != owner:
+        return None
+    return run
 
 
 class EventWriter:
@@ -151,18 +155,27 @@ def artifact_dict(a: Artifact) -> dict[str, Any]:
             "download_url": f"/api/artifacts/{a.id}/download"}
 
 
-async def list_artifacts(run_id: str | None = None) -> list[dict[str, Any]]:
+async def list_artifacts(run_id: str | None = None, owner: str | None = None) -> list[dict[str, Any]]:
     async with database.async_session() as session:
         stmt = select(Artifact).order_by(Artifact.created_at.desc())
+        if owner is not None:
+            stmt = stmt.join(Run, Run.id == Artifact.run_id).where(Run.owner_id == owner)
         if run_id:
             stmt = stmt.where(Artifact.run_id == run_id)
         rows = (await session.execute(stmt)).scalars().all()
     return [artifact_dict(a) for a in rows]
 
 
-async def get_artifact(artifact_id: str) -> Artifact | None:
+async def get_artifact(artifact_id: str, owner: str | None = None) -> Artifact | None:
     async with database.async_session() as session:
-        return await session.get(Artifact, artifact_id)
+        artifact = await session.get(Artifact, artifact_id)
+        if artifact is None:
+            return None
+        if owner is not None:
+            run = await session.get(Run, artifact.run_id)
+            if run is None or run.owner_id != owner:
+                return None
+        return artifact
 
 
 def run_dict(r: Run) -> dict[str, Any]:
@@ -173,9 +186,14 @@ def run_dict(r: Run) -> dict[str, Any]:
             "completed_at": r.completed_at.isoformat() if r.completed_at else None}
 
 
-async def list_runs(kind: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+async def list_runs(kind: str | None = None, limit: int = 50, owner: str | None = None,
+                    parent_run_id: str | None = None) -> list[dict[str, Any]]:
     async with database.async_session() as session:
         stmt = select(Run).order_by(Run.created_at.desc()).limit(limit)
+        if owner is not None:
+            stmt = stmt.where(Run.owner_id == owner)
+        if parent_run_id is not None:
+            stmt = stmt.where(Run.parent_run_id == parent_run_id)
         if kind:
             stmt = stmt.where(Run.kind == kind)
         rows = (await session.execute(stmt)).scalars().all()

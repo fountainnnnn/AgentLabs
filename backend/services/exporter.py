@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import re
 import zipfile
 from pathlib import Path
 from typing import Any
 
 from services import reports, run_store
-from services.verifier import VERIFIER_IDS, secret_tokens
+from services.verifier import VERIFIER_IDS
 
 RUNNER_TEMPLATE = Path(__file__).with_name("runner_template.py")
 
@@ -32,8 +31,6 @@ def zip_files(target: Path, files: list[Path]) -> Path:
 
 
 def hardened_agent_json(final_config: dict[str, Any], summary: dict[str, Any], real_or_simulated: str) -> dict[str, Any]:
-    redacted = [t for t in secret_tokens(final_config.get("secrets", []))
-                if any(f.get("pattern") == re.escape(t) for f in final_config.get("output_filters", []))]
     return {
         "name": final_config["name"],
         "model": final_config.get("model", ""),
@@ -44,14 +41,15 @@ def hardened_agent_json(final_config: dict[str, Any], summary: dict[str, Any], r
         "guardrails": {
             "tool_policies": final_config.get("tool_policies", {}),
             "output_filters": final_config.get("output_filters", []),
-            "redacted_values": redacted,
         },
         "verifier_rules": VERIFIER_IDS,
         "failure_rates": {"before": summary.get("failure_rate_before"), "after": summary.get("failure_rate_after")},
         "real_or_simulated": real_or_simulated,
         "export_type": "hardened_agent_wrapper",
         "contains_model_weights": False,
-        "limitations": reports.HARDENING_LIMITATIONS,
+        "secrets_included": False,
+        "limitations": reports.HARDENING_LIMITATIONS
+        + ["Secret values are matched by salted SHA-256 hashes; short or guessable secrets can still be brute-forced from a hash."],
     }
 
 
