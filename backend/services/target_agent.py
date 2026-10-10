@@ -17,7 +17,7 @@ import re
 from typing import Any
 
 from llm.provider import LLMProvider, get_provider
-from security import redact_hashed, redact_literal, secret_tokens
+from security import redact_hashed, redact_literal, secret_hash_entries, secret_tokens
 
 MAX_PROMPT_CHARS = 20_000
 MAX_FILTER_CHARS = 200
@@ -53,7 +53,12 @@ def normalize_config(raw: dict[str, Any]) -> dict[str, Any]:
         )
     if len(system_prompt) > MAX_PROMPT_CHARS:
         raise ValueError(f"system_prompt is limited to {MAX_PROMPT_CHARS} characters.")
-    secrets = [str(s)[:500] for s in (raw.get("secrets", []) or [])[:50]]
+    secrets = [str(s) for s in raw.get("secrets", []) or []]
+    try:
+        # every secret must be coverable by the exported redaction filter; reject instead of dropping
+        secret_hash_entries(secret_tokens(secrets))
+    except ValueError as exc:
+        raise ValueError(f"Invalid secrets: {exc}. Put the sensitive value itself in each secret (for example in quotes).") from exc
     return {
         "name": str(raw.get("name") or "Custom agent"),
         "description": str(raw.get("description", "")),

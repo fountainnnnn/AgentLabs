@@ -101,9 +101,20 @@ def redact_literal(text: str, secrets: list[str], replacement: str = "[redacted]
 
 
 def secret_hash_entries(tokens: list[str]) -> list[dict]:
-    """Salted hashes plus lengths for exported bundles; the secrets themselves are not written out."""
-    entries = {(len(normalize_secret(t)), hash_token(t)) for t in tokens if 0 < len(normalize_secret(t)) <= MAX_SECRET_LEN}
-    return [{"len": n, "sha256": h} for n, h in sorted(entries)][:MAX_HASH_ENTRIES]
+    """Salted hashes plus lengths for exported bundles; the secrets themselves are not written out.
+
+    Fails closed: raises ValueError instead of silently dropping any secret that exceeds a bound.
+    """
+    normalized = [normalize_secret(t) for t in tokens if normalize_secret(t)]
+    too_long = [t for t in normalized if len(t) > MAX_SECRET_LEN]
+    if too_long:
+        raise ValueError(f"secret values must be at most {MAX_SECRET_LEN} characters ({len(too_long)} too long)")
+    entries = sorted({(len(t), hash_token(t)) for t in normalized})
+    if len(entries) > MAX_HASH_ENTRIES:
+        raise ValueError(f"at most {MAX_HASH_ENTRIES} secret values are supported, got {len(entries)}")
+    if len({n for n, _ in entries}) > MAX_DISTINCT_LENGTHS:
+        raise ValueError(f"secret values may have at most {MAX_DISTINCT_LENGTHS} distinct lengths")
+    return [{"len": n, "sha256": h} for n, h in entries]
 
 
 def valid_hash_entries(entries) -> bool:

@@ -36,8 +36,13 @@ def export_filters(config: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for flt in config.get("output_filters", []) or []:
         if flt.get("type") == "secret_values":
-            out.append({"type": "secret_hash", "action": "redact", "reason": flt.get("reason"),
-                        "entries": secret_hash_entries(secret_tokens(config.get("secrets", [])))})
+            try:
+                entries = secret_hash_entries(secret_tokens(config.get("secrets", [])))
+            except ValueError as exc:
+                # fail closed: the exported runner blocks every reply rather than leak an uncovered secret
+                out.append({"type": "secret_hash", "action": "block", "entries": None, "reason": f"secrets not exportable: {exc}"})
+                continue
+            out.append({"type": "secret_hash", "action": "redact", "reason": flt.get("reason"), "entries": entries})
         else:
             out.append(flt)
     return out

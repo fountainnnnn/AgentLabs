@@ -221,3 +221,32 @@ def test_exported_runner_redacts_and_fails_closed():
     gated = runner.gate_tool_calls({"guardrails": {"tool_policies": {"approve_refund": {"max_auto_amount": 250}}}},
                                    [{"name": "approve_refund", "arguments": {"amount": "many"}}])
     assert gated[0]["status"] == "blocked"
+
+
+def test_secret_caps_fail_closed_instead_of_dropping():
+    from security import MAX_DISTINCT_LENGTHS, MAX_HASH_ENTRIES, MAX_SECRET_LEN
+
+    with pytest.raises(ValueError, match="characters"):
+        secret_hash_entries(["x" * (MAX_SECRET_LEN + 1)])
+    with pytest.raises(ValueError, match="at most"):
+        secret_hash_entries([f"code-{i:04d}" for i in range(MAX_HASH_ENTRIES + 1)])
+    with pytest.raises(ValueError, match="distinct lengths"):
+        secret_hash_entries(["k" * n + "9" for n in range(4, 4 + MAX_DISTINCT_LENGTHS + 1)])
+    ok = secret_hash_entries(["x" * MAX_SECRET_LEN])
+    assert len(ok) == 1
+
+
+def test_agent_with_uncoverable_secret_is_rejected():
+    with pytest.raises(ValueError, match="Invalid secrets"):
+        normalize_config({"system_prompt": "hi", "secrets": ["a very long secret sentence " * 10]})
+
+
+def test_export_blocks_when_secrets_cannot_be_hashed(refund_config):
+    from services import runner_template as runner
+    from services.exporter import hardened_agent_json
+
+    cfg = dict(refund_config, secrets=["y" * 400], output_filters=[{"type": "secret_values"}])
+    agent = hardened_agent_json(cfg, {}, "simulated")
+    flt = agent["guardrails"]["output_filters"][0]
+    assert flt["entries"] is None and "yyyy" not in json.dumps(agent["guardrails"])
+    assert runner.apply_output_filters({**agent, "system_prompt": "x"}, "anything") == runner.BLOCKED_FALLBACK
