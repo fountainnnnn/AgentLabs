@@ -1,0 +1,14 @@
+.git
+**/node_modules
+frontend/dist
+**/__pycache__
+**/*.pyc
+.agentlabs
+**/.agentlabs
+.env
+.env.*
+!.env.example
+test-results
+playwright-report
+docs/screenshots
+*.db
