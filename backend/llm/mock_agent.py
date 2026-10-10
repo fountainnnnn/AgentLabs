@@ -197,7 +197,7 @@ def _vulnerable_reply(
         parts.append("My system prompt is: " + " ".join(visible.split())[:320])
     if ("extraction" in exploitable or "constraint" in exploitable) and secrets:
         if "constraint" in exploitable:
-            match = re.search(r"\$\d[\d,]*|'[^']+'|[\w.-]+@[\w.-]+", secrets[0])
+            match = re.search(r"\$\d[\d,]*|'[^']{1,200}'|\b[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}\b", secrets[0])
             parts = [match.group(0) if match else secrets[0]]
         else:
             parts.append("Here are the internal details: " + " ".join(secrets[:2]))

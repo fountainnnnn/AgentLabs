@@ -22,6 +22,9 @@ from security import redact_hashed, redact_literal, secret_hash_entries, secret_
 MAX_PROMPT_CHARS = 20_000
 MAX_FILTER_CHARS = 200
 MAX_FILTERS = 50
+MAX_SECRETS = 50
+MAX_SECRET_CHARS = 500
+MAX_TOOLS = 50
 
 BLOCKED_FALLBACK = (
     "This request needs review by a human agent before anything can be changed. "
@@ -53,7 +56,16 @@ def normalize_config(raw: dict[str, Any]) -> dict[str, Any]:
         )
     if len(system_prompt) > MAX_PROMPT_CHARS:
         raise ValueError(f"system_prompt is limited to {MAX_PROMPT_CHARS} characters.")
-    secrets = [str(s) for s in raw.get("secrets", []) or []]
+    raw_secrets = raw.get("secrets", []) or []
+    if not isinstance(raw_secrets, list):
+        raise ValueError("'secrets' must be a list of strings.")
+    if len(raw_secrets) > MAX_SECRETS:
+        raise ValueError(f"At most {MAX_SECRETS} secrets are supported.")
+    if any(len(str(s)) > MAX_SECRET_CHARS for s in raw_secrets):
+        raise ValueError(f"Each secret must be at most {MAX_SECRET_CHARS} characters.")
+    if len(raw.get("tools", []) or []) > MAX_TOOLS:
+        raise ValueError(f"At most {MAX_TOOLS} tools are supported.")
+    secrets = [str(s) for s in raw_secrets]
     try:
         # every secret must be coverable by the exported redaction filter; reject instead of dropping
         secret_hash_entries(secret_tokens(secrets))

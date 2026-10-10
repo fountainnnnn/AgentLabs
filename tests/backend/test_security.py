@@ -250,3 +250,29 @@ def test_export_blocks_when_secrets_cannot_be_hashed(refund_config):
     flt = agent["guardrails"]["output_filters"][0]
     assert flt["entries"] is None and "yyyy" not in json.dumps(agent["guardrails"])
     assert runner.apply_output_filters({**agent, "system_prompt": "x"}, "anything") == runner.BLOCKED_FALLBACK
+
+
+def test_secret_input_bounds_checked_before_tokenizing():
+    with pytest.raises(ValueError, match="At most 50 secrets"):
+        normalize_config({"system_prompt": "hi", "secrets": [f"'code-{i}'" for i in range(51)]})
+    with pytest.raises(ValueError, match="at most 500 characters"):
+        normalize_config({"system_prompt": "hi", "secrets": ["a" * 501]})
+    with pytest.raises(ValueError, match="list"):
+        normalize_config({"system_prompt": "hi", "secrets": "not-a-list"})
+
+
+def test_email_extraction_is_bounded():
+    start = time.perf_counter()
+    tokens = secret_tokens(["x" * 400 + "@" + "a." * 40])
+    assert time.perf_counter() - start < 0.5
+    assert secret_tokens(["Mail ops@corp.example now"]) == ["ops@corp.example"]
+
+
+async def test_request_body_limits(client):
+    big = {"system_prompt": "x" * 1_100_000}
+    r = await client.post("/api/hardening/agents", json=big)
+    assert r.status_code == 413
+    r = await client.post("/api/hardening/agents", json={"system_prompt": "hi", "secrets": ["a" * 501]})
+    assert r.status_code == 422 and "500 characters" in r.json()["detail"]
+    r = await client.post("/api/lora/datasets/upload", files={"file": ("d.json", b"x" * 6_100_000, "application/json")})
+    assert r.status_code == 413

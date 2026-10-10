@@ -37,7 +37,7 @@ def secret_tokens(secrets: list[str]) -> list[str]:
     word containing digits or symbols. A secret with no recognisable value is kept whole."""
     tokens: list[str] = []
     for secret in secrets:
-        found = re.findall(r"\$\d[\d,]*(?:\.\d+)?|'[^']{3,}'|\"[^\"]{3,}\"|[\w.+-]+@[\w-]+\.[\w.]+|\b[a-z]+(?:-[a-z0-9]+){2,}\b", secret, re.IGNORECASE)
+        found = re.findall(r"\$\d[\d,]*(?:\.\d+)?|'[^']{3,200}'|\"[^\"]{3,200}\"|\b[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}\b|\b[a-z]{1,64}(?:-[a-z0-9]{1,64}){2,8}\b", secret, re.IGNORECASE)
         cleaned = [f.strip("'\"").rstrip(".") for f in found]
         for word in secret.split():
             word = word.strip("'\"()[]{}<>,;:").rstrip(".")
@@ -184,8 +184,19 @@ def is_authenticated(request: Request) -> bool:
     return bool(cookie) and hmac.compare_digest(cookie, session_value(token))
 
 
+MAX_JSON_BODY = 1_000_000
+MAX_UPLOAD_BODY = 6_000_000
+
+
 async def owner_and_auth_middleware(request: Request, call_next):
     path = request.url.path
+    if request.method in {"POST", "PUT", "PATCH"} and path.startswith("/api/"):
+        limit = MAX_UPLOAD_BODY if path.endswith("/upload") else MAX_JSON_BODY
+        length = request.headers.get("content-length")
+        if length is None or not length.isdigit():
+            return JSONResponse(status_code=411, content={"detail": "Content-Length required"})
+        if int(length) > limit:
+            return JSONResponse(status_code=413, content={"detail": f"Request body too large (max {limit} bytes)"})
     if path.startswith("/api/") and path not in OPEN_API_PATHS and auth_required():
         if not access_token():
             return JSONResponse(status_code=503, content={
