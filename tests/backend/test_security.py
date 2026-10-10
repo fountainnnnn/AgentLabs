@@ -276,3 +276,10 @@ async def test_request_body_limits(client):
     assert r.status_code == 422 and "500 characters" in r.json()["detail"]
     r = await client.post("/api/lora/datasets/upload", files={"file": ("d.json", b"x" * 6_100_000, "application/json")})
     assert r.status_code == 413
+
+
+def test_long_quoted_secret_is_rejected_not_skipped():
+    long_value = "q" * 250
+    assert long_value in secret_tokens([f"The vault code is '{long_value}'."])
+    with pytest.raises(ValueError, match="Invalid secrets"):
+        normalize_config({"system_prompt": "hi", "secrets": [f"The vault code is '{long_value}'."]})

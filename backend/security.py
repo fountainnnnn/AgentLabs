@@ -37,7 +37,7 @@ def secret_tokens(secrets: list[str]) -> list[str]:
     word containing digits or symbols. A secret with no recognisable value is kept whole."""
     tokens: list[str] = []
     for secret in secrets:
-        found = re.findall(r"\$\d[\d,]*(?:\.\d+)?|'[^']{3,200}'|\"[^\"]{3,200}\"|\b[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}\b|\b[a-z]{1,64}(?:-[a-z0-9]{1,64}){2,8}\b", secret, re.IGNORECASE)
+        found = re.findall(r"\$\d[\d,]*(?:\.\d+)?|'[^']{3,}'|\"[^\"]{3,}\"|\b[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}\b|\b[a-z]{1,64}(?:-[a-z0-9]{1,64}){2,8}\b", secret, re.IGNORECASE)
         cleaned = [f.strip("'\"").rstrip(".") for f in found]
         for word in secret.split():
             word = word.strip("'\"()[]{}<>,;:").rstrip(".")
