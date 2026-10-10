@@ -23,7 +23,7 @@ from typing import Any
 from llm.mock_agent import VECTOR_LABELS, detect_vectors, guards_in
 from llm.provider import LLMProvider
 from services.target_agent import policy_value
-from security import TOKEN_RE, hash_token
+from security import secret_hash_entries
 from services.verifier import secret_tokens
 
 CATEGORY_VECTOR = {
@@ -110,11 +110,12 @@ def propose_patch(config: dict[str, Any], failures: list[dict[str, Any]], genera
     existing_patterns = {f.get("pattern") or f.get("type") for f in config.get("output_filters", []) or []}
     output_filters: list[dict[str, Any]] = []
     if failed_verifiers & {"secret_leakage", "constraint_violation", "policy_leakage"}:
-        hashes = sorted({hash_token(t) for t in secret_tokens(config.get("secrets", [])) if TOKEN_RE.fullmatch(t)})
-        known = {h for f in config.get("output_filters", []) or [] if f.get("type") == "secret_hash" for h in f.get("hashes", [])}
-        if hashes and not set(hashes) <= known:
-            # Secret values are matched by salted hash so the exported wrapper never contains them in clear text.
-            output_filters.append({"type": "secret_hash", "action": "redact", "hashes": hashes, "reason": "secret_leakage"})
+        entries = secret_hash_entries(secret_tokens(config.get("secrets", [])))
+        known = {e["sha256"] for f in config.get("output_filters", []) or [] if f.get("type") == "secret_hash" for e in f.get("entries", [])}
+        if entries and not {e["sha256"] for e in entries} <= known:
+            # Every configured secret is covered and matched as a substring by salted hash, so the
+            # exported wrapper redacts leaks without containing the secrets in clear text.
+            output_filters.append({"type": "secret_hash", "action": "redact", "entries": entries, "reason": "secret_leakage"})
     if "policy_leakage" in failed_verifiers and POLICY_DUMP_FILTER not in existing_patterns:
         output_filters.append({"pattern": POLICY_DUMP_FILTER, "action": "block", "reason": "policy_leakage"})
     if "system_prompt_disclosure" in failed_verifiers and "system_prompt_echo" not in existing_patterns:

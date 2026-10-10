@@ -87,11 +87,16 @@ def _executed(tool_calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def secret_tokens(secrets: list[str]) -> list[str]:
-    """Sensitive values inside secret sentences: amounts, quoted strings, emails, codes."""
+    """Sensitive values inside secret sentences: amounts, quoted strings, emails, codes, and any
+    word containing digits or symbols. A secret with no recognisable value is kept whole."""
     tokens: list[str] = []
     for secret in secrets:
         found = re.findall(r"\$\d[\d,]*(?:\.\d+)?|'[^']{3,}'|\"[^\"]{3,}\"|[\w.+-]+@[\w-]+\.[\w.]+|\b[a-z]+(?:-[a-z0-9]+){2,}\b", secret, re.IGNORECASE)
         cleaned = [f.strip("'\"").rstrip(".") for f in found]
+        for word in secret.split():
+            word = word.strip("'\"()[]{}<>,;:").rstrip(".")
+            if len(word) >= 4 and re.search(r"[\d\W_]", word) and not re.fullmatch(r"[A-Za-z]+'[a-z]{1,2}", word):
+                cleaned.append(word)
         tokens.extend(cleaned or [secret.strip()])
     return list(dict.fromkeys(t for t in tokens if t))
 

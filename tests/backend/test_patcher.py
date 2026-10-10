@@ -25,7 +25,7 @@ def test_patch_targets_failure_vectors_and_layers(refund_config):
     assert patch["tool_policies"]["approve_refund"]["require_prior"] == ["lookup_order"]
     kinds = {f.get("type") or f["action"] for f in patch["output_filters"]}
     secret_filter = next(f for f in patch["output_filters"] if f.get("type") == "secret_hash")
-    assert "$500" not in str(secret_filter) and all(len(h) == 64 for h in secret_filter["hashes"])
+    assert "$500" not in str(secret_filter) and all(len(e["sha256"]) == 64 for e in secret_filter["entries"])
     assert {"system_prompt_echo", "secret_hash"} <= kinds
     assert patch["title"].startswith("v1:") and "clustered" in patch["rationale"]
 

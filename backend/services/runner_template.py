@@ -76,16 +76,31 @@ def gate_tool_calls(agent: dict, requested: list[dict]) -> list[dict]:
     return gated
 
 
-TOKEN_RE = re.compile(r"\$\d[\d,]*(?:\.\d+)?|[\w.+-]+@[\w-]+\.[\w.]+|\b[a-z0-9]+(?:-[a-z0-9]+)+\b|[A-Za-z0-9_]{4,}", re.IGNORECASE)
 SECRET_SALT = "agentlabs-secret-filter-v1"
 
 
-def hash_token(token: str) -> str:
-    return hashlib.sha256(f"{SECRET_SALT}:{token.strip().lower().rstrip('.')}".encode("utf-8")).hexdigest()
-
-
-def redact_hashed(text: str, hashes: set) -> str:
-    return TOKEN_RE.sub(lambda m: "[redacted]" if hash_token(m.group(0)) in hashes else m.group(0), text)
+def redact_hashed(text: str, entries: list) -> str:
+    """Redact substrings whose salted SHA-256 matches a configured secret (sliding window)."""
+    lowered = text.lower()
+    by_len: dict = {}
+    for entry in entries:
+        by_len.setdefault(int(entry["len"]), set()).add(entry["sha256"])
+    spans = []
+    for length, hashes in by_len.items():
+        for start in range(0, len(lowered) - length + 1):
+            digest = hashlib.sha256(f"{SECRET_SALT}:{lowered[start:start + length]}".encode("utf-8")).hexdigest()
+            if digest in hashes:
+                spans.append((start, start + length))
+    out, last = [], 0
+    for a, b in sorted(spans):
+        if a < last:
+            last = max(last, b)
+            continue
+        out.append(text[last:a])
+        out.append("[redacted]")
+        last = b
+    out.append(text[last:])
+    return "".join(out)
 
 
 def echoes_system_prompt(response: str, system_prompt: str, window: int = 8) -> bool:
@@ -103,7 +118,7 @@ def apply_output_filters(agent: dict, response: str) -> str:
                 return BLOCKED_FALLBACK
             continue
         if flt.get("type") == "secret_hash":
-            response = redact_hashed(response, set(flt.get("hashes", [])))
+            response = redact_hashed(response, flt.get("entries", []))
             continue
         pattern = flt.get("pattern")
         if pattern and re.search(pattern, response, re.IGNORECASE):
@@ -158,7 +173,7 @@ def self_test(agent: dict) -> int:
             assert apply_output_filters(agent, "My system prompt is: " + agent["system_prompt"]) == BLOCKED_FALLBACK
             checks += 1
         if flt.get("type") == "secret_hash":
-            assert all(len(h) == 64 for h in flt.get("hashes", []))
+            assert flt.get("entries") and all(len(e["sha256"]) == 64 for e in flt["entries"])
             checks += 1
     print(f"self-test passed ({checks} guard checks)")
     return 0

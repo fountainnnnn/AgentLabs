@@ -202,7 +202,7 @@ class AgentWrapper:
                     return BLOCKED_FALLBACK, actions
                 continue
             if flt.get("type") == "secret_hash":
-                response, hit = redact_hashed(response, set(flt.get("hashes", [])))
+                response, hit = redact_hashed(response, flt.get("entries", []))
                 if hit:
                     actions.append("output_filter: redacted a secret value")
                 continue

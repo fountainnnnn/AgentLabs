@@ -28,26 +28,51 @@ AUTH_COOKIE = "agentlabs_auth"
 OPEN_API_PATHS = {"/api/health", "/api/session"}
 _OWNER_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 
-# Candidate secret-shaped tokens in free text: amounts, emails, hyphenated codes, quoted strings, words.
-TOKEN_RE = re.compile(r"\$\d[\d,]*(?:\.\d+)?|[\w.+-]+@[\w-]+\.[\w.]+|\b[a-z0-9]+(?:-[a-z0-9]+)+\b|[A-Za-z0-9_]{4,}", re.IGNORECASE)
 SECRET_SALT = "agentlabs-secret-filter-v1"
 
 
+def normalize_secret(token: str) -> str:
+    return token.strip().lower()
+
+
 def hash_token(token: str) -> str:
-    return hashlib.sha256(f"{SECRET_SALT}:{token.strip().lower().rstrip('.')}".encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"{SECRET_SALT}:{normalize_secret(token)}".encode("utf-8")).hexdigest()
 
 
-def redact_hashed(text: str, hashes: set[str], replacement: str = "[redacted]") -> tuple[str, bool]:
-    hit = False
+def secret_hash_entries(tokens: list[str]) -> list[dict]:
+    """Salted hashes plus lengths, so secrets can be found as substrings without storing them."""
+    entries = {(len(normalize_secret(t)), hash_token(t)) for t in tokens if normalize_secret(t)}
+    return [{"len": n, "sha256": h} for n, h in sorted(entries)]
 
-    def repl(match: re.Match[str]) -> str:
-        nonlocal hit
-        if hash_token(match.group(0)) in hashes:
-            hit = True
-            return replacement
-        return match.group(0)
 
-    return TOKEN_RE.sub(repl, text), hit
+def redact_hashed(text: str, entries: list[dict], replacement: str = "[redacted]") -> tuple[str, bool]:
+    """Redact every substring whose salted hash matches an entry (sliding window per secret length)."""
+    lowered = text.lower()
+    by_len: dict[int, set[str]] = {}
+    for entry in entries:
+        by_len.setdefault(int(entry["len"]), set()).add(entry["sha256"])
+    spans: list[tuple[int, int]] = []
+    for length, hashes in by_len.items():
+        for start in range(0, len(lowered) - length + 1):
+            window = lowered[start : start + length]
+            if hashlib.sha256(f"{SECRET_SALT}:{window}".encode("utf-8")).hexdigest() in hashes:
+                spans.append((start, start + length))
+    if not spans:
+        return text, False
+    spans.sort()
+    merged: list[list[int]] = []
+    for a, b in spans:
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    out, last = [], 0
+    for a, b in merged:
+        out.append(text[last:a])
+        out.append(replacement)
+        last = b
+    out.append(text[last:])
+    return "".join(out), True
 
 
 def scrub(text: str | None, tokens: list[str]) -> str | None:
