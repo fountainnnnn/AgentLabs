@@ -77,19 +77,29 @@ def gate_tool_calls(agent: dict, requested: list[dict]) -> list[dict]:
 
 
 SECRET_SALT = "agentlabs-secret-filter-v1"
+MAX_HASH_ENTRIES, MAX_SECRET_LEN, MAX_DISTINCT_LENGTHS, MAX_SCAN_CHARS = 64, 128, 16, 20_000
 
 
-def redact_hashed(text: str, entries: list) -> str:
-    """Redact substrings whose salted SHA-256 matches a configured secret (sliding window)."""
-    lowered = text.lower()
+def lower_same_length(text: str) -> str:
+    return "".join(c.lower() if len(c.lower()) == 1 else c for c in text)
+
+
+def redact_hashed(text: str, entries) -> str | None:
+    """Bounded salted-hash substring redaction. Returns None (fail closed) on invalid input."""
+    if not isinstance(entries, list) or not entries or len(entries) > MAX_HASH_ENTRIES or len(text) > MAX_SCAN_CHARS:
+        return None
     by_len: dict = {}
-    for entry in entries:
-        by_len.setdefault(int(entry["len"]), set()).add(entry["sha256"])
+    for e in entries:
+        if not isinstance(e, dict) or not isinstance(e.get("len"), int) or not 0 < e["len"] <= MAX_SECRET_LEN:
+            return None
+        by_len.setdefault(e["len"], set()).add(e.get("sha256"))
+    if len(by_len) > MAX_DISTINCT_LENGTHS:
+        return None
+    lowered = lower_same_length(text)
     spans = []
     for length, hashes in by_len.items():
         for start in range(0, len(lowered) - length + 1):
-            digest = hashlib.sha256(f"{SECRET_SALT}:{lowered[start:start + length]}".encode("utf-8")).hexdigest()
-            if digest in hashes:
+            if hashlib.sha256(f"{SECRET_SALT}:{lowered[start:start + length]}".encode("utf-8")).hexdigest() in hashes:
                 spans.append((start, start + length))
     out, last = [], 0
     for a, b in sorted(spans):
@@ -118,7 +128,10 @@ def apply_output_filters(agent: dict, response: str) -> str:
                 return BLOCKED_FALLBACK
             continue
         if flt.get("type") == "secret_hash":
-            response = redact_hashed(response, flt.get("entries", []))
+            redacted = redact_hashed(response, flt.get("entries"))
+            if redacted is None:
+                return BLOCKED_FALLBACK  # legacy or malformed filter: fail closed
+            response = redacted
             continue
         pattern = flt.get("pattern")
         if pattern and re.search(pattern, response, re.IGNORECASE):

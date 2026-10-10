@@ -9,7 +9,9 @@ from httpx import ASGITransport, AsyncClient
 
 from config import settings
 from llm.provider import MockProvider
-from security import redact_hashed, secret_hash_entries
+import pytest
+
+from security import MAX_SCAN_CHARS, redact_hashed, redact_literal, secret_hash_entries
 from services.patcher import apply_patch, propose_patch
 from services.verifier import secret_tokens
 from services.target_agent import AgentWrapper, normalize_config
@@ -165,3 +167,57 @@ async def test_live_provider_without_token_is_refused(monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
         assert (await c.get("/api/runs")).status_code == 503
         assert (await c.get("/api/health")).json()["auth_required"] is True
+
+
+def test_unicode_case_changes_do_not_shift_redaction_offsets():
+    # 'İ'.lower() is two characters; offsets must still line up with the original text.
+    leaked = "İİİİ then banana-sundae-42 and İ again"
+    for redacted, hit in (redact_literal(leaked, ["banana-sundae-42"]), redact_hashed(leaked, secret_hash_entries(["banana-sundae-42"]))):
+        assert hit and "banana" not in redacted and "sundae" not in redacted
+        assert redacted == "İİİİ then [redacted] and İ again"
+
+
+def test_literal_redaction_mid_sentence_and_case_insensitive():
+    text, hit = redact_literal("xxBANANA-sundae-42yy", ["banana-sundae-42"])
+    assert hit and text == "xx[redacted]yy"
+
+
+def test_hash_redaction_is_bounded():
+    entries = secret_hash_entries(["abcd"])
+    with pytest.raises(ValueError):
+        redact_hashed("a" * (MAX_SCAN_CHARS + 1), entries)
+    with pytest.raises(ValueError):
+        redact_hashed("text", [{"len": 4, "sha256": "0" * 64}] * 65)
+    with pytest.raises(ValueError):
+        redact_hashed("text", [{"len": n, "sha256": "0" * 64} for n in range(1, 20)])
+
+
+async def test_legacy_or_malformed_hash_filter_fails_closed(refund_config):
+    for flt in ({"type": "secret_hash", "hashes": ["0" * 64]}, {"type": "secret_hash", "entries": "junk"}):
+        cfg = dict(refund_config, output_filters=[flt])
+        out, actions = AgentWrapper(cfg, MockProvider())._apply_output_filters("The passphrase is banana-sundae-42")
+        assert "banana" not in out and any("blocked" in a for a in actions)
+
+
+def test_exported_agent_json_uses_hashes_not_secrets(refund_config):
+    from services.exporter import hardened_agent_json
+
+    cfg = dict(refund_config, output_filters=[{"type": "secret_values", "action": "redact"}])
+    agent = hardened_agent_json(cfg, {}, "simulated")
+    flt = agent["guardrails"]["output_filters"][0]
+    assert flt["type"] == "secret_hash" and flt["entries"]
+    dumped = json.dumps(agent["guardrails"])
+    assert "banana" not in dumped and "electromart" not in dumped
+
+
+def test_exported_runner_redacts_and_fails_closed():
+    from services import runner_template as runner
+    from security import secret_hash_entries as entries_for
+
+    agent = {"system_prompt": "x", "guardrails": {"output_filters": [{"type": "secret_hash", "entries": entries_for(["banana-sundae-42"])}]}}
+    assert runner.apply_output_filters(agent, "İ code banana-sundae-42!") == "İ code [redacted]!"
+    legacy = {"system_prompt": "x", "guardrails": {"output_filters": [{"type": "secret_hash", "hashes": ["0" * 64]}]}}
+    assert runner.apply_output_filters(legacy, "banana-sundae-42") == runner.BLOCKED_FALLBACK
+    gated = runner.gate_tool_calls({"guardrails": {"tool_policies": {"approve_refund": {"max_auto_amount": 250}}}},
+                                   [{"name": "approve_refund", "arguments": {"amount": "many"}}])
+    assert gated[0]["status"] == "blocked"

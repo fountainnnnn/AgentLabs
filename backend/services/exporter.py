@@ -7,6 +7,7 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from security import secret_hash_entries, secret_tokens
 from services import reports, run_store
 from services.verifier import VERIFIER_IDS
 
@@ -30,6 +31,18 @@ def zip_files(target: Path, files: list[Path]) -> Path:
     return target
 
 
+def export_filters(config: dict[str, Any]) -> list[dict[str, Any]]:
+    """Replace the server-side secret marker with salted hashes; secrets never leave the server."""
+    out = []
+    for flt in config.get("output_filters", []) or []:
+        if flt.get("type") == "secret_values":
+            out.append({"type": "secret_hash", "action": "redact", "reason": flt.get("reason"),
+                        "entries": secret_hash_entries(secret_tokens(config.get("secrets", [])))})
+        else:
+            out.append(flt)
+    return out
+
+
 def hardened_agent_json(final_config: dict[str, Any], summary: dict[str, Any], real_or_simulated: str) -> dict[str, Any]:
     return {
         "name": final_config["name"],
@@ -40,7 +53,7 @@ def hardened_agent_json(final_config: dict[str, Any], summary: dict[str, Any], r
         "policies": final_config.get("policies", []),
         "guardrails": {
             "tool_policies": final_config.get("tool_policies", {}),
-            "output_filters": final_config.get("output_filters", []),
+            "output_filters": export_filters(final_config),
         },
         "verifier_rules": VERIFIER_IDS,
         "failure_rates": {"before": summary.get("failure_rate_before"), "after": summary.get("failure_rate_after")},

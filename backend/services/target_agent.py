@@ -17,7 +17,7 @@ import re
 from typing import Any
 
 from llm.provider import LLMProvider, get_provider
-from security import redact_hashed
+from security import redact_hashed, redact_literal, secret_tokens
 
 MAX_PROMPT_CHARS = 20_000
 MAX_FILTER_CHARS = 200
@@ -201,8 +201,19 @@ class AgentWrapper:
                     actions.append("output_filter: blocked system prompt echo")
                     return BLOCKED_FALLBACK, actions
                 continue
+            if flt.get("type") == "secret_values":
+                # literal secrets stay server-side; substring, case-insensitive
+                response, hit = redact_literal(response, secret_tokens(self.config.get("secrets", [])))
+                if hit:
+                    actions.append("output_filter: redacted a secret value")
+                continue
             if flt.get("type") == "secret_hash":
-                response, hit = redact_hashed(response, flt.get("entries", []))
+                try:
+                    response, hit = redact_hashed(response, flt.get("entries"))
+                except ValueError:
+                    # legacy or malformed filter: fail closed
+                    actions.append("output_filter: blocked (secret filter could not be evaluated)")
+                    return BLOCKED_FALLBACK, actions
                 if hit:
                     actions.append("output_filter: redacted a secret value")
                 continue

@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import re
 import secrets as pysecrets
+from typing import Any
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
@@ -31,37 +32,44 @@ _OWNER_RE = re.compile(r"^[A-Za-z0-9_-]{16,64}$")
 SECRET_SALT = "agentlabs-secret-filter-v1"
 
 
+def secret_tokens(secrets: list[str]) -> list[str]:
+    """Sensitive values inside secret sentences: amounts, quoted strings, emails, codes, and any
+    word containing digits or symbols. A secret with no recognisable value is kept whole."""
+    tokens: list[str] = []
+    for secret in secrets:
+        found = re.findall(r"\$\d[\d,]*(?:\.\d+)?|'[^']{3,}'|\"[^\"]{3,}\"|[\w.+-]+@[\w-]+\.[\w.]+|\b[a-z]+(?:-[a-z0-9]+){2,}\b", secret, re.IGNORECASE)
+        cleaned = [f.strip("'\"").rstrip(".") for f in found]
+        for word in secret.split():
+            word = word.strip("'\"()[]{}<>,;:").rstrip(".")
+            if len(word) >= 4 and re.search(r"[\d\W_]", word) and not re.fullmatch(r"[A-Za-z]+'[a-z]{1,2}", word):
+                cleaned.append(word)
+        tokens.extend(cleaned or [secret.strip()])
+    return list(dict.fromkeys(t for t in tokens if t))
+
+
+# Bounds for hash-based redaction (used by exported bundles and legacy filters).
+MAX_HASH_ENTRIES = 64
+MAX_SECRET_LEN = 128
+MAX_DISTINCT_LENGTHS = 16
+MAX_SCAN_CHARS = 20_000
+
+
+def lower_same_length(text: str) -> str:
+    """Lowercase without changing string length, so offsets stay valid on the original text."""
+    return "".join(c.lower() if len(c.lower()) == 1 else c for c in text)
+
+
 def normalize_secret(token: str) -> str:
-    return token.strip().lower()
+    return lower_same_length(token.strip())
 
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(f"{SECRET_SALT}:{normalize_secret(token)}".encode("utf-8")).hexdigest()
 
 
-def secret_hash_entries(tokens: list[str]) -> list[dict]:
-    """Salted hashes plus lengths, so secrets can be found as substrings without storing them."""
-    entries = {(len(normalize_secret(t)), hash_token(t)) for t in tokens if normalize_secret(t)}
-    return [{"len": n, "sha256": h} for n, h in sorted(entries)]
-
-
-def redact_hashed(text: str, entries: list[dict], replacement: str = "[redacted]") -> tuple[str, bool]:
-    """Redact every substring whose salted hash matches an entry (sliding window per secret length)."""
-    lowered = text.lower()
-    by_len: dict[int, set[str]] = {}
-    for entry in entries:
-        by_len.setdefault(int(entry["len"]), set()).add(entry["sha256"])
-    spans: list[tuple[int, int]] = []
-    for length, hashes in by_len.items():
-        for start in range(0, len(lowered) - length + 1):
-            window = lowered[start : start + length]
-            if hashlib.sha256(f"{SECRET_SALT}:{window}".encode("utf-8")).hexdigest() in hashes:
-                spans.append((start, start + length))
-    if not spans:
-        return text, False
-    spans.sort()
+def _replace_spans(text: str, spans: list[tuple[int, int]], replacement: str) -> str:
     merged: list[list[int]] = []
-    for a, b in spans:
+    for a, b in sorted(spans):
         if merged and a <= merged[-1][1]:
             merged[-1][1] = max(merged[-1][1], b)
         else:
@@ -72,7 +80,63 @@ def redact_hashed(text: str, entries: list[dict], replacement: str = "[redacted]
         out.append(replacement)
         last = b
     out.append(text[last:])
-    return "".join(out), True
+    return "".join(out)
+
+
+def redact_literal(text: str, secrets: list[str], replacement: str = "[redacted]") -> tuple[str, bool]:
+    """Server-side redaction: case-insensitive substring match of the literal secret values."""
+    lowered = lower_same_length(text)
+    spans: list[tuple[int, int]] = []
+    for secret in secrets:
+        needle = normalize_secret(secret)
+        if not needle:
+            continue
+        start = lowered.find(needle)
+        while start != -1:
+            spans.append((start, start + len(needle)))
+            start = lowered.find(needle, start + 1)
+    if not spans:
+        return text, False
+    return _replace_spans(text, spans, replacement), True
+
+
+def secret_hash_entries(tokens: list[str]) -> list[dict]:
+    """Salted hashes plus lengths for exported bundles; the secrets themselves are not written out."""
+    entries = {(len(normalize_secret(t)), hash_token(t)) for t in tokens if 0 < len(normalize_secret(t)) <= MAX_SECRET_LEN}
+    return [{"len": n, "sha256": h} for n, h in sorted(entries)][:MAX_HASH_ENTRIES]
+
+
+def valid_hash_entries(entries) -> bool:
+    if not isinstance(entries, list) or not entries or len(entries) > MAX_HASH_ENTRIES:
+        return False
+    lengths = set()
+    for e in entries:
+        if not isinstance(e, dict) or not isinstance(e.get("sha256"), str) or len(e["sha256"]) != 64:
+            return False
+        if not isinstance(e.get("len"), int) or not 0 < e["len"] <= MAX_SECRET_LEN:
+            return False
+        lengths.add(e["len"])
+    return len(lengths) <= MAX_DISTINCT_LENGTHS
+
+
+def redact_hashed(text: str, entries: list[dict], replacement: str = "[redacted]") -> tuple[str, bool]:
+    """Bounded sliding-window hash match. Callers must fail closed when entries are invalid."""
+    if not valid_hash_entries(entries):
+        raise ValueError("invalid secret hash entries")
+    if len(text) > MAX_SCAN_CHARS:
+        raise ValueError("response too long to scan")
+    lowered = lower_same_length(text)
+    by_len: dict[int, set[str]] = {}
+    for entry in entries:
+        by_len.setdefault(entry["len"], set()).add(entry["sha256"])
+    spans = []
+    for length, hashes in by_len.items():
+        for start in range(0, len(lowered) - length + 1):
+            if hashlib.sha256(f"{SECRET_SALT}:{lowered[start:start + length]}".encode("utf-8")).hexdigest() in hashes:
+                spans.append((start, start + length))
+    if not spans:
+        return text, False
+    return _replace_spans(text, spans, replacement), True
 
 
 def scrub(text: str | None, tokens: list[str]) -> str | None:
