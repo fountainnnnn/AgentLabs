@@ -1,0 +1,5 @@
+# Optional: enables Real Local Model Mode in the LoRA lab (CPU works for tiny models).
+torch>=2.2
+transformers>=4.44
+peft>=0.12
+accelerate>=0.33

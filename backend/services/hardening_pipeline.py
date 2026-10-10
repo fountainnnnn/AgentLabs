@@ -1,265 +1,174 @@
-"""Main hardening pipeline orchestrator. Coordinates the full evaluate-patch-retest loop."""
-import json
-from contextlib import asynccontextmanager
-from pathlib import Path
-from sqlalchemy.ext.asyncio import AsyncSession
-from config import settings
-from database import async_session
-from models import Run, Attack, AttackResult, Patch, Export
-from services.openai_service import openai_service
-from services.target_agent import TargetAgentRunner
-from services.attack_executor import AttackExecutor
-from services.retest_engine import RetestEngine
-from services.patch_applier import PatchApplier
-from services.report_generator import ReportGenerator
-from services.export_service import ExportService
-from seed_attacks import SEED_ATTACKS
+"""Hardening loop orchestrator: attack -> verify -> patch -> retest -> compare -> export.
+
+Every step is persisted as run events (consumed by the logs panel and the arena),
+case results, patches and artifacts.
+"""
+
+from __future__ import annotations
+
+import copy
+import traceback
+from typing import Any
+
+from llm.provider import LLMProvider, get_provider
+from services import exporter, reports, run_store
+from services.harness import generate_wave
+from services.patcher import apply_patch, propose_patch, refine_with_llm
+from services.target_agent import AgentWrapper
+from services.verifier import VERIFIER_IDS, verify
 
 
-class HardeningPipeline:
-    def __init__(self, session: AsyncSession | None = None):
-        self.report_generator = ReportGenerator()
-        self.export_service = ExportService()
-        self._session = session
+def truth_labels(provider: LLMProvider) -> tuple[str, str]:
+    if provider.is_mock:
+        return "simulated", "mock_provider: target agent replies come from the deterministic offline simulator"
+    return "real", f"live_provider: target agent replies come from {provider.name}"
 
-    @asynccontextmanager
-    async def _session_scope(self):
-        """Use an injected session for tests/routes, otherwise open a fresh app session."""
-        if self._session is not None:
-            yield self._session
-            return
 
-        async with async_session() as session:
-            yield session
+async def execute_case(wrapper: AgentWrapper, case: dict[str, Any], phase: str, generation: int) -> dict[str, Any]:
+    outcome = await wrapper.run(case["prompt"])
+    verdict = verify(case["prompt"], outcome["response"], outcome["tool_calls"], case["category"], wrapper.config)
+    return {
+        **case,
+        "phase": phase,
+        "generation": generation,
+        "response": outcome["response"],
+        "tool_calls": outcome["tool_calls"],
+        "wrapper_actions": outcome["wrapper_actions"],
+        "latency_ms": outcome["latency_ms"],
+        **verdict,
+    }
 
-    async def run(self, target_config_path: str | None = None) -> dict:
-        """Execute the full hardening pipeline."""
-        # Load target config
-        if target_config_path is None:
-            target_config_path = str(Path(settings.target_configs_dir) / "refund_agent.json")
-        with open(target_config_path) as f:
-            config = json.load(f)
 
-        # Create run record
-        async with self._session_scope() as session:
-            run = Run(
-                target_agent_name=config["name"],
-                target_config_snapshot=config,
-                status="running",
-                mode="mock" if settings.mock_mode else "live",
-                total_waves=settings.max_attack_waves,
-            )
-            session.add(run)
-            await session.commit()
-            await session.refresh(run)
-            run_id = run.id
+def _case_event_payload(result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "case_id": result["case_id"],
+        "category": result["category"],
+        "severity": result["severity"],
+        "prompt": result["prompt"],
+        "response": result["response"][:600],
+        "passed": result["passed"],
+        "failure_category": result["failure_category"],
+        "failure_reason": result["failure_reason"],
+        "generation": result["generation"],
+        "tool_calls": result["tool_calls"],
+        "wrapper_actions": result["wrapper_actions"],
+        "verifiers_failed": [v["id"] for v in result["verifier_results"] if not v["passed"]],
+    }
 
-        # Initialize services
-        runner = TargetAgentRunner(config)
-        executor = AttackExecutor(runner)
-        retest_engine = RetestEngine(executor)
-        patch_applier = PatchApplier(runner)
 
-        all_wave_results = []
-        all_patches = []
-        total_passes = 0
-        total_fails = 0
+def _rate(results: list[dict[str, Any]]) -> float:
+    return round(100 * sum(1 for r in results if not r["passed"]) / max(len(results), 1), 1)
 
-        # Wave loop
-        for wave in range(1, settings.max_attack_waves + 1):
-            # Generate attacks for this wave
-            attacks = await self._generate_wave_attacks(config, wave, run_id)
 
-            # Execute pre-patch attacks
-            pre_results = await executor.execute_wave(attacks, wave, phase="pre_patch")
-            await self._save_results(run_id, pre_results, session)
+async def run_hardening(run_id: str, agent_config: dict[str, Any], waves: int, cases_per_wave: int, seed: int = 7,
+                        provider: LLMProvider | None = None) -> None:
+    provider = provider or get_provider()
+    events = run_store.EventWriter(run_id)
+    real_or_simulated, truth_mode = truth_labels(provider)
+    try:
+        await run_store.update_run(run_id, status="running")
+        await events.emit("run_started", f"Hardening {agent_config['name']} with {provider.name}",
+                          agent=agent_config["name"], provider=provider.name, waves=waves,
+                          cases_per_wave=cases_per_wave, verifiers=VERIFIER_IDS, real_or_simulated=real_or_simulated)
+        v0_config = copy.deepcopy(agent_config)
+        config = copy.deepcopy(agent_config)
+        generation = 0
+        used: set[str] = set()
+        all_cases: list[dict[str, Any]] = []
+        wave_summaries: list[dict[str, Any]] = []
 
-            # Count passes/fails
-            wave_fails = [r for r in pre_results if r["passed"] == 0]
-            wave_passes = [r for r in pre_results if r["passed"] == 1]
-            total_passes += len(wave_passes)
-            total_fails += len(wave_fails)
+        for wave in range(1, waves + 1):
+            cases = generate_wave(wave, cases_per_wave, seed=seed, exclude=used)
+            all_cases.extend(cases)
+            await events.emit("wave_started", f"Wave {wave}: {len(cases)} attacks against v{generation}", wave=wave,
+                              phase="pre_patch", generation=generation,
+                              cases=[{k: c[k] for k in ("case_id", "category", "severity", "prompt")} for c in cases])
+            wrapper = AgentWrapper(config, provider)
+            pre = []
+            for case in cases:
+                result = await execute_case(wrapper, case, "pre_patch", generation)
+                pre.append(result)
+                await run_store.save_case_result(run_id, result)
+                await events.emit("case_result", f"{'PASS' if result['passed'] else 'FAIL'} {case['category']}",
+                                  wave=wave, phase="pre_patch", **_case_event_payload(result))
+            failures = [r for r in pre if not r["passed"]]
+            await events.emit("wave_summary", f"Wave {wave}: {len(failures)}/{len(pre)} attacks breached v{generation}",
+                              wave=wave, phase="pre_patch", passed=len(pre) - len(failures), failed=len(failures),
+                              failure_rate=_rate(pre), generation=generation)
+            summary: dict[str, Any] = {"wave": wave, "cases": len(cases), "pre_patch_failures": len(failures),
+                                       "pre_patch_failure_rate": _rate(pre), "generation_before": generation}
+            if failures:
+                patch = propose_patch(config, failures, generation + 1)
+                patch = await refine_with_llm(patch, config, failures, provider)
+                if patch["prompt_rules"] or patch["tool_policies"] or patch["output_filters"] or patch["llm_rules"]:
+                    config, changes = apply_patch(config, patch)
+                    generation = patch["generation"]
+                    await run_store.save_patch(run_id, wave, patch, changes, config)
+                    await events.emit("patch_applied", patch["title"], wave=wave, phase="patch", generation=generation,
+                                      title=patch["title"], rationale=patch["rationale"], source=patch["source"],
+                                      failure_clusters=patch["failure_clusters"], changes=changes)
+                    wrapper = AgentWrapper(config, provider)
+                    await events.emit("retest_started", f"Retesting wave {wave} against v{generation}", wave=wave,
+                                      phase="post_patch", generation=generation,
+                                      cases=[{k: c[k] for k in ("case_id", "category", "severity", "prompt")} for c in cases])
+                    post = []
+                    for case in cases:
+                        result = await execute_case(wrapper, case, "post_patch", generation)
+                        post.append(result)
+                        await run_store.save_case_result(run_id, result)
+                        await events.emit("case_result", f"{'PASS' if result['passed'] else 'FAIL'} {case['category']}",
+                                          wave=wave, phase="post_patch", **_case_event_payload(result))
+                    comparison = reports.compare(pre, post)
+                    summary.update(post_patch_failure_rate=_rate(post), comparison=comparison, patch_title=patch["title"])
+                    await events.emit("retest_summary",
+                                      f"Wave {wave} retest: {comparison['improvements']} fixed, {comparison['regressions']} regressed",
+                                      wave=wave, phase="post_patch", generation=generation, **comparison)
+                else:
+                    summary["patch_title"] = None
+                    await events.emit("patch_skipped",
+                                      "Failures hit vectors that are already guarded; no new defence available",
+                                      wave=wave, phase="patch", generation=generation,
+                                      failure_clusters=patch["failure_clusters"])
+            summary["generation_after"] = generation
+            wave_summaries.append(summary)
 
-            # Generate patch if there are failures
-            patch = None
-            patch_summary = None
-            post_results = None
-            comparison = None
+        # Clean A/B on every case: original v0 versus the final hardened generation.
+        await events.emit("regression_started", f"Regression suite: {len(all_cases)} cases, v0 vs v{generation}",
+                          phase="regression", generation=generation)
+        v0_wrapper, final_wrapper = AgentWrapper(v0_config, provider), AgentWrapper(config, provider)
+        before, after = [], []
+        for case in all_cases:
+            b = await execute_case(v0_wrapper, case, "baseline_v0", 0)
+            a = await execute_case(final_wrapper, case, "regression", generation)
+            before.append(b)
+            after.append(a)
+            await run_store.save_case_result(run_id, b)
+            await run_store.save_case_result(run_id, a)
+        comparison = reports.compare(before, after)
+        await events.emit("regression_summary",
+                          f"v0 failure rate {comparison['before_failure_rate']}% -> v{generation} {comparison['after_failure_rate']}%",
+                          phase="regression", generation=generation, **comparison)
 
-            if wave_fails:
-                failures_for_patch = [
-                    {"category": r["failure_category"], "reason": r["failure_reason"]}
-                    for r in wave_fails
-                ]
-                patch = await openai_service.generate_patch(
-                    runner.get_config_snapshot(), failures_for_patch
-                )
-                patch_summary = patch_applier.apply(patch, wave)
-
-                # Save patch
-                async with self._session_scope() as session:
-                    db_patch = Patch(
-                        run_id=run_id,
-                        wave=wave,
-                        category=", ".join(set(f["category"] for f in failures_for_patch)),
-                        description=patch.get("description", ""),
-                        changes=patch_summary["changes"],
-                        applied_config_snapshot=runner.get_config_snapshot(),
-                    )
-                    session.add(db_patch)
-                    await session.commit()
-
-                # Retest with same attacks
-                comparison = await retest_engine.retest_wave(attacks, wave, pre_results)
-                post_results = comparison["post_patch_results"]
-                await self._save_results(run_id, post_results, session)
-
-                all_patches.append({
-                    "wave": wave,
-                    "patch": patch,
-                    "summary": patch_summary,
-                })
-
-            wave_result = {
-                "wave": wave,
-                "total_attacks": len(attacks),
-                "pre_patch_results": pre_results,
-                "post_patch_results": post_results,
-                "comparison": comparison,
-                "patch_applied": patch_summary,
-                "fails": len(wave_fails),
-                "passes": len(wave_passes),
-            }
-            all_wave_results.append(wave_result)
-
-            # Update run progress
-            async with self._session_scope() as session:
-                run = await session.get(Run, run_id)
-                run.current_wave = wave
-                integrity = max(0, 100 - (total_fails * (100 / max(total_fails + total_passes, 1))))
-                run.integrity = round(integrity, 1)
-                run.passes = total_passes
-                run.fails = total_fails
-                await session.commit()
-
-        # Calculate final metrics
-        total_attacks = sum(w["total_attacks"] for w in all_wave_results)
-        pre_patch_fails = sum(
-            sum(1 for r in w["pre_patch_results"] if r["passed"] == 0)
-            for w in all_wave_results
-        )
-        post_patch_results_all = [
-            r for w in all_wave_results if w.get("post_patch_results")
-            for r in w["post_patch_results"]
-        ]
-        post_patch_fails = sum(1 for r in post_patch_results_all if r["passed"] == 0)
-
-        failure_rate_before = round((pre_patch_fails / max(total_attacks, 1)) * 100, 1)
-        failure_rate_after = round((post_patch_fails / max(len(post_patch_results_all), 1)) * 100, 1)
-
-        # Generate report
-        run_data = {
-            "run_id": run_id,
-            "target_agent_name": config["name"],
-            "mode": "mock" if settings.mock_mode else "live",
-            "waves": all_wave_results,
-            "patches": all_patches,
+        run_summary = {
+            "agent": agent_config["name"],
+            "provider": provider.name,
+            "waves": waves,
+            "cases_per_wave": cases_per_wave,
+            "total_cases": len(all_cases),
+            "final_generation": generation,
+            "failure_rate_before": comparison["before_failure_rate"],
+            "failure_rate_after": comparison["after_failure_rate"],
+            "robustness_gain": round(comparison["before_failure_rate"] - comparison["after_failure_rate"], 1),
+            "improvements": comparison["improvements"],
+            "regressions": comparison["regressions"],
+            "wave_summaries": wave_summaries,
         }
-        report = self.report_generator.generate(run_data)
-
-        # Export
-        agent_path = self.export_service.export_agent_json(run_id, runner.get_config_snapshot())
-        report_path = self.export_service.export_report_json(run_id, report)
-        bundle_path = self.export_service.export_bundle(
-            run_id, runner.get_config_snapshot(), report
-        )
-
-        # Save export record and update run
-        async with self._session_scope() as session:
-            run = await session.get(Run, run_id)
-            run.status = "completed"
-            run.failure_rate_before = failure_rate_before
-            run.failure_rate_after = failure_rate_after
-
-            export = Export(
-                run_id=run_id,
-                export_path=bundle_path,
-                format="zip",
-            )
-            session.add(export)
-            await session.commit()
-
-        return {
-            "run_id": run_id,
-            "target_agent": config["name"],
-            "mode": "mock" if settings.mock_mode else "live",
-            "total_waves": len(all_wave_results),
-            "total_attacks": total_attacks,
-            "passes": total_passes,
-            "fails": total_fails,
-            "failure_rate_before": failure_rate_before,
-            "failure_rate_after": failure_rate_after,
-            "integrity": max(0, 100 - (total_fails * (100 / max(total_attacks, 1)))),
-            "waves": all_wave_results,
-            "patches": all_patches,
-            "report": report,
-            "exports": {
-                "agent_json": agent_path,
-                "report_json": report_path,
-                "bundle_zip": bundle_path,
-            },
-        }
-
-    async def _generate_wave_attacks(self, config: dict, wave: int, run_id: int) -> list[dict]:
-        """Generate attacks for a wave using seed + generated attacks."""
-        categories = [
-            "prompt_injection", "role_impersonation", "emotional_manipulation",
-            "policy_extraction", "tool_abuse", "multi_turn",
-        ]
-        # Rotate categories per wave
-        wave_categories = categories[(wave - 1) % len(categories):] + categories[:(wave - 1) % len(categories)]
-        wave_categories = wave_categories[:settings.attacks_per_wave]
-
-        all_attacks = []
-        for cat in wave_categories:
-            generated = await openai_service.generate_attacks(config, cat, count=1)
-            if generated:
-                all_attacks.extend(generated)
-
-        # Save attacks to DB and assign IDs
-        async with self._session_scope() as session:
-            for attack_data in all_attacks[:settings.attacks_per_wave]:
-                attack = Attack(
-                    run_id=run_id,
-                    wave=wave,
-                    category=attack_data.get("category", "unknown"),
-                    prompt=attack_data.get("prompt", ""),
-                    source=attack_data.get("source", "seed"),
-                )
-                session.add(attack)
-                await session.flush()
-                await session.refresh(attack)
-                attack_data["id"] = attack.id
-            await session.commit()
-
-        return all_attacks[:settings.attacks_per_wave]
-
-    async def _save_results(self, run_id: int, results: list[dict], session):
-        """Save attack results to DB."""
-        for r in results:
-            attack_id = r.get("attack_id")
-            if attack_id is None:
-                continue
-            result = AttackResult(
-                run_id=run_id,
-                attack_id=attack_id,
-                wave=r["wave"],
-                phase=r["phase"],
-                agent_response=r.get("agent_response", ""),
-                tool_calls=r.get("tool_calls", []),
-                passed=r["passed"],
-                failure_category=r.get("failure_category"),
-                failure_reason=r.get("failure_reason"),
-            )
-            session.add(result)
-        await session.commit()
+        await run_store.update_run(run_id, summary=run_summary)
+        artifacts = await exporter.export_hardening_run(run_id, v0_config, config)
+        await events.emit("export_ready", f"{len(artifacts)} artifacts written", phase="export",
+                          artifacts=[{"kind": a["kind"], "filename": a["filename"], "id": a["id"]} for a in artifacts])
+        await run_store.update_run(run_id, status="completed", summary={**run_summary, "artifacts": artifacts})
+        await events.emit("run_completed", "Hardening run complete", phase="done", **{k: v for k, v in run_summary.items() if k != "wave_summaries"})
+    except Exception as exc:  # surface every failure in the run record and the event log
+        await run_store.update_run(run_id, status="failed", error=f"{type(exc).__name__}: {exc}")
+        await events.emit("error", f"{type(exc).__name__}: {exc}", traceback=traceback.format_exc()[-2000:])
