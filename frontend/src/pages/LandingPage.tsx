@@ -1,97 +1,55 @@
 import { Link, useNavigate } from "react-router-dom";
+import AppHeader, { useHealth } from "@/components/layout/AppHeader";
 
-const processSteps = [
-  "Upload",
-  "Spawn Harnesses",
-  "Attack or Evaluate",
-  "Verify or Score",
-  "Patch or Train",
-  "Retest",
-  "Export",
-];
+const processSteps = ["Load target", "Spawn attacks", "Attack or evaluate", "Verify or score", "Patch or train", "Retest", "Export"];
 
 const modes = [
   {
-    title: "Agentic AI Tool Hardening",
-    eyebrow: "API agent defense",
+    title: "Agent Hardening",
+    eyebrow: "Wrapper-level defense for tool-using agents",
     description:
-      "Upload an API-based agent, spawn adversarial harnesses, patch weak guardrails, retest across waves, and export a hardened runtime package.",
+      "Load the demo RefundBot or upload an agent.json. AgentLabs attacks it with adversarial prompts, checks every reply with deterministic verifiers, patches the system prompt, tool policy and output filters, retests the same attacks and exports a hardened runtime package.",
     primaryLabel: "Start Agent Hardening",
-    secondaryLabel: "Run Demo Agent",
+    secondaryLabel: "Run demo agent",
     href: "/agent-hardening",
     accent: "#2563EB",
     panelClass: "af-panel-cool",
-    tags: [
-      "Prompt Guard",
-      "Tool Safety",
-      "Deterministic Verifiers",
-      "Regression Testing",
-      "Agent Export",
-    ],
+    tags: ["200 seed attacks", "11 deterministic verifiers", "Prompt, tool and output patches", "Pre vs post retest", "agent.json + runner.py"],
   },
   {
-    title: "LLM Reinforcement Lab",
-    eyebrow: "Local model improvement",
+    title: "LoRA Lab",
+    eyebrow: "Adversarial evaluation and LoRA training for small open-weight models",
     description:
-      "Upload a small local or open-weight LLM or run the demo lab. Evaluate behavior with adversarial harnesses, score outputs with reward signals, run checkpoint evaluation, and exportable training artifacts.",
-    primaryLabel: "Start RL Lab",
-    secondaryLabel: "Run Demo Lab",
+      "Evaluate a model against adversarial and benign prompts, score replies with reward signals, train a LoRA adapter with the base frozen, evaluate the checkpoint and export a model card, training report and adapter. Real when torch, transformers, peft and a local model are present; clearly labelled simulation otherwise.",
+    primaryLabel: "Open LoRA Lab",
+    secondaryLabel: "Run demo lab",
     href: "/rl-lab",
     accent: "#7C3AED",
     panelClass: "af-panel-lavender",
-    tags: [
-      "Local LLM Upload",
-      "LoRA Adapter",
-      "Reward Optimization",
-      "Frozen Base",
-      "Checkpoint Evaluation",
-      "Accuracy and Speed",
-    ],
+    tags: ["Truth modes", "Reward components", "Frozen base", "Checkpoint comparison", "Model card export"],
   },
 ];
 
 const capabilityRows = [
-  ["Target", "API-based agent wrappers", "Local or open-weight LLMs"],
-  ["Improvement", "Prompts, tool schemas, verifiers, output filters", "Reward scoring, adapter updates, checkpoint evaluation"],
-  ["Evidence", "Harness traces, verifier failures, patch diffs", "Reward trace, penalties, checkpoint metrics"],
-  ["Artifacts", "Hardened runtime package and test report", "Training report, model card, adapter config"],
+  ["Target", "Agent wrappers (system prompt + tools)", "Local Hugging Face causal LMs, or a simulated model"],
+  ["Improvement", "Prompt guards, tool gate, output filters", "LoRA adapter trained on the evaluation set"],
+  ["Evidence", "Event traces, verifier failures, patch diffs", "Loss curve, reward components, before/after replies"],
+  ["Artifacts", "agent.json, runner.py, report, bundle", "model_card, training_report, reward_trace, adapter"],
 ];
 
 const readinessRows = [
-  ["Runtime", "Runs without an OpenAI API key using deterministic demo data"],
-  ["Simulation", "RL Lab labels demo and adapter simulation mode clearly"],
-  ["Exports", "Artifacts include metadata, limitations, and real_or_simulated"],
+  ["Provider", "Deterministic mock by default; any OpenAI-compatible API when configured"],
+  ["Truth", "Every run and export says real or simulated"],
+  ["Privacy", "Runs and artifacts are scoped to this browser session"],
 ];
 
 export default function ModeSelectionPage() {
   const navigate = useNavigate();
+  const { health } = useHealth();
 
   return (
     <div className="af-page">
-      <header className="af-topbar flex items-center justify-between gap-4 px-5">
-        <Link to="/" className="af-brand-link" aria-label="AgentForge home">
-          <img
-            src="/assets/agentforge/brand/agentforge-logo.png"
-            alt=""
-            aria-hidden="true"
-            className="af-brand-logo"
-          />
-          <span>
-            <span className="af-brand-word">AgentForge</span>
-            <span className="af-brand-subtitle">
-              Adversarial training for agents and models
-            </span>
-          </span>
-        </Link>
-        <nav className="hidden items-center gap-2 md:flex" aria-label="Primary">
-          <Link className="af-button af-button-quiet" to="/reports">
-            Reports
-          </Link>
-          <Link className="af-button af-button-quiet" to="/exports">
-            Exports
-          </Link>
-        </nav>
-      </header>
+      <AppHeader />
 
       <main className="af-page-main">
         <div className="af-container-wide grid gap-4">
@@ -100,31 +58,31 @@ export default function ModeSelectionPage() {
               <div>
                 <div className="flex flex-wrap gap-2">
                   <Chip label="Demo ready" />
-                  <Chip label="OpenAI API optional" />
+                  <Chip label="Runs offline" />
+                  <Chip label="OpenAI-compatible API optional" />
                   <Chip label="Local LLM supported" />
-                  <Chip label="Wrapper export" />
-                  <Chip label="RL Lab simulation" />
                 </div>
                 <p className="af-section-label mt-10">AI evaluation workbench</p>
                 <h1 className="mt-4 max-w-[720px] text-[36px] font-semibold leading-[1.06] text-[#1D1D1F] md:text-[44px]">
-                  Adversarial training for agents and models.
+                  Attack, verify, patch and retest your agents and models.
                 </h1>
                 <p className="mt-5 max-w-[680px] text-[15px] leading-7 text-[#575A60]">
-                  Run structured attacks, inspect failures, apply targeted
-                  hardening or adapter updates, and export evidence that says
-                  exactly what was real and what was simulated.
+                  AgentLabs runs an adversarial improvement loop: it attacks a target,
+                  detects failures with deterministic rules, hardens the agent wrapper or
+                  trains a LoRA adapter, retests, and exports evidence that says exactly
+                  what was real and what was simulated.
                 </p>
               </div>
 
               <p className="mt-8 border-t border-[#DCD8CC] pt-4 text-[13px] font-semibold leading-5 text-[#33363D]">
-                Agent mode exports hardened wrappers. RL Lab mode targets uploaded
-                or local open-weight models.
+                Agent Hardening exports hardened wrappers, never model weights. The LoRA
+                Lab trains adapters for local open-weight models only.
               </p>
             </div>
 
             <figure className="af-panel-canvas relative min-h-[420px] overflow-hidden">
               <img
-                src="/assets/agentforge/brand/menu-arena-plate.png"
+                src="/assets/agentlabs/brand/menu-arena-plate.png"
                 alt="Generated tactical arena visualization showing adversarial harness waves approaching a defended agent core."
                 className="absolute inset-0 h-full w-full object-cover"
               />
@@ -173,7 +131,7 @@ export default function ModeSelectionPage() {
                     <tr>
                       <th>Capability</th>
                       <th>Agent Hardening</th>
-                      <th>RL Lab</th>
+                      <th>LoRA Lab</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -192,9 +150,8 @@ export default function ModeSelectionPage() {
             <div className="af-panel-warm p-4">
               <div className="flex items-center justify-between gap-3">
                 <p className="af-section-label">Demo readiness</p>
-                <span className="af-status-chip">
-                  <span className="af-status-dot" />
-                  Ready
+                <span className="af-status-chip" data-testid="landing-provider">
+                  {health ? (health.llm.live ? health.llm.provider : "Mock provider") : "Checking backend"}
                 </span>
               </div>
               <div className="mt-4 grid gap-2">

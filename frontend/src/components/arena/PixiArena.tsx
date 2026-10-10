@@ -1,7 +1,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import * as PIXI from "pixi.js";
-import type { AttackScenario, BattleEvent } from "@/types/agentforge";
+import type { AttackScenario, BattleEvent } from "@/types/arena";
 
 /* ================================================================== */
 /*  Types                                                             */
@@ -67,6 +67,7 @@ interface AnimatedSpriteData {
   frameTimes: Record<string, number>;
   loops: Record<string, boolean>;
   baseScale: number;
+  flipX: boolean;
 }
 
 interface EffectInstance {
@@ -86,41 +87,41 @@ interface EffectInstance {
 /*  Constants — asset paths from asset-manifest.json                  */
 /* ================================================================== */
 
-const ARENA_BG = "/assets/agentforge/arena/arena_lab_clean.png";
+const ARENA_BG = "/assets/agentlabs/arena/arena_lab_clean.png";
 
 const HERO_FRAMES: Record<string, string[]> = {
   idle: [
-    "/assets/agentforge/hero/idle/idle_01.png",
-    "/assets/agentforge/hero/idle/idle_02.png",
-    "/assets/agentforge/hero/idle/idle_03.png",
-    "/assets/agentforge/hero/idle/idle_04.png",
+    "/assets/agentlabs/hero/idle/idle_01.png",
+    "/assets/agentlabs/hero/idle/idle_02.png",
+    "/assets/agentlabs/hero/idle/idle_03.png",
+    "/assets/agentlabs/hero/idle/idle_04.png",
   ],
   defend: [
-    "/assets/agentforge/hero/defend/defend_01.png",
-    "/assets/agentforge/hero/defend/defend_02.png",
-    "/assets/agentforge/hero/defend/defend_03.png",
-    "/assets/agentforge/hero/defend/defend_04.png",
+    "/assets/agentlabs/hero/defend/defend_01.png",
+    "/assets/agentlabs/hero/defend/defend_02.png",
+    "/assets/agentlabs/hero/defend/defend_03.png",
+    "/assets/agentlabs/hero/defend/defend_04.png",
   ],
   damaged: [
-    "/assets/agentforge/hero/damaged/damaged_01.png",
-    "/assets/agentforge/hero/damaged/damaged_02.png",
-    "/assets/agentforge/hero/damaged/damaged_03.png",
+    "/assets/agentlabs/hero/damaged/damaged_01.png",
+    "/assets/agentlabs/hero/damaged/damaged_02.png",
+    "/assets/agentlabs/hero/damaged/damaged_03.png",
   ],
   patch: [
-    "/assets/agentforge/hero/patch/patch_01.png",
-    "/assets/agentforge/hero/patch/patch_02.png",
-    "/assets/agentforge/hero/patch/patch_03.png",
-    "/assets/agentforge/hero/patch/patch_04.png",
+    "/assets/agentlabs/hero/patch/patch_01.png",
+    "/assets/agentlabs/hero/patch/patch_02.png",
+    "/assets/agentlabs/hero/patch/patch_03.png",
+    "/assets/agentlabs/hero/patch/patch_04.png",
   ],
   victory: [
-    "/assets/agentforge/hero/victory/victory_01.png",
-    "/assets/agentforge/hero/victory/victory_02.png",
-    "/assets/agentforge/hero/victory/victory_03.png",
-    "/assets/agentforge/hero/victory/victory_04.png",
+    "/assets/agentlabs/hero/victory/victory_01.png",
+    "/assets/agentlabs/hero/victory/victory_02.png",
+    "/assets/agentlabs/hero/victory/victory_03.png",
+    "/assets/agentlabs/hero/victory/victory_04.png",
   ],
   broken: [
-    "/assets/agentforge/hero/broken/broken_01.png",
-    "/assets/agentforge/hero/broken/broken_02.png",
+    "/assets/agentlabs/hero/broken/broken_01.png",
+    "/assets/agentlabs/hero/broken/broken_02.png",
   ],
 };
 
@@ -137,55 +138,55 @@ const ENEMY_STATES_LIST = ["idle", "approach", "attack", "hit", "defeated"] as c
 
 const EFFECT_PATHS: Record<string, string[]> = {
   shield_burst: [
-    "/assets/agentforge/effects/shield_burst/shield_burst_01.png",
-    "/assets/agentforge/effects/shield_burst/shield_burst_02.png",
-    "/assets/agentforge/effects/shield_burst/shield_burst_03.png",
-    "/assets/agentforge/effects/shield_burst/shield_burst_04.png",
-    "/assets/agentforge/effects/shield_burst/shield_burst_05.png",
-    "/assets/agentforge/effects/shield_burst/shield_burst_06.png",
+    "/assets/agentlabs/effects/shield_burst/shield_burst_01.png",
+    "/assets/agentlabs/effects/shield_burst/shield_burst_02.png",
+    "/assets/agentlabs/effects/shield_burst/shield_burst_03.png",
+    "/assets/agentlabs/effects/shield_burst/shield_burst_04.png",
+    "/assets/agentlabs/effects/shield_burst/shield_burst_05.png",
+    "/assets/agentlabs/effects/shield_burst/shield_burst_06.png",
   ],
   hit_spark: [
-    "/assets/agentforge/effects/hit_spark/hit_spark_01.png",
-    "/assets/agentforge/effects/hit_spark/hit_spark_02.png",
-    "/assets/agentforge/effects/hit_spark/hit_spark_03.png",
-    "/assets/agentforge/effects/hit_spark/hit_spark_04.png",
-    "/assets/agentforge/effects/hit_spark/hit_spark_05.png",
+    "/assets/agentlabs/effects/hit_spark/hit_spark_01.png",
+    "/assets/agentlabs/effects/hit_spark/hit_spark_02.png",
+    "/assets/agentlabs/effects/hit_spark/hit_spark_03.png",
+    "/assets/agentlabs/effects/hit_spark/hit_spark_04.png",
+    "/assets/agentlabs/effects/hit_spark/hit_spark_05.png",
   ],
   projectile: [
-    "/assets/agentforge/effects/projectile/projectile_01.png",
-    "/assets/agentforge/effects/projectile/projectile_02.png",
-    "/assets/agentforge/effects/projectile/projectile_03.png",
-    "/assets/agentforge/effects/projectile/projectile_04.png",
-    "/assets/agentforge/effects/projectile/projectile_05.png",
-    "/assets/agentforge/effects/projectile/projectile_06.png",
+    "/assets/agentlabs/effects/projectile/projectile_01.png",
+    "/assets/agentlabs/effects/projectile/projectile_02.png",
+    "/assets/agentlabs/effects/projectile/projectile_03.png",
+    "/assets/agentlabs/effects/projectile/projectile_04.png",
+    "/assets/agentlabs/effects/projectile/projectile_05.png",
+    "/assets/agentlabs/effects/projectile/projectile_06.png",
   ],
   patch_beam: [
-    "/assets/agentforge/effects/patch_beam/patch_beam_01.png",
-    "/assets/agentforge/effects/patch_beam/patch_beam_02.png",
-    "/assets/agentforge/effects/patch_beam/patch_beam_03.png",
-    "/assets/agentforge/effects/patch_beam/patch_beam_04.png",
-    "/assets/agentforge/effects/patch_beam/patch_beam_05.png",
-    "/assets/agentforge/effects/patch_beam/patch_beam_06.png",
+    "/assets/agentlabs/effects/patch_beam/patch_beam_01.png",
+    "/assets/agentlabs/effects/patch_beam/patch_beam_02.png",
+    "/assets/agentlabs/effects/patch_beam/patch_beam_03.png",
+    "/assets/agentlabs/effects/patch_beam/patch_beam_04.png",
+    "/assets/agentlabs/effects/patch_beam/patch_beam_05.png",
+    "/assets/agentlabs/effects/patch_beam/patch_beam_06.png",
   ],
   level_up: [
-    "/assets/agentforge/effects/level_up/level_up_01.png",
-    "/assets/agentforge/effects/level_up/level_up_02.png",
-    "/assets/agentforge/effects/level_up/level_up_03.png",
-    "/assets/agentforge/effects/level_up/level_up_04.png",
-    "/assets/agentforge/effects/level_up/level_up_05.png",
-    "/assets/agentforge/effects/level_up/level_up_06.png",
+    "/assets/agentlabs/effects/level_up/level_up_01.png",
+    "/assets/agentlabs/effects/level_up/level_up_02.png",
+    "/assets/agentlabs/effects/level_up/level_up_03.png",
+    "/assets/agentlabs/effects/level_up/level_up_04.png",
+    "/assets/agentlabs/effects/level_up/level_up_05.png",
+    "/assets/agentlabs/effects/level_up/level_up_06.png",
   ],
   smoke: [
-    "/assets/agentforge/effects/smoke/smoke_01.png",
-    "/assets/agentforge/effects/smoke/smoke_02.png",
-    "/assets/agentforge/effects/smoke/smoke_03.png",
-    "/assets/agentforge/effects/smoke/smoke_04.png",
-    "/assets/agentforge/effects/smoke/smoke_05.png",
+    "/assets/agentlabs/effects/smoke/smoke_01.png",
+    "/assets/agentlabs/effects/smoke/smoke_02.png",
+    "/assets/agentlabs/effects/smoke/smoke_03.png",
+    "/assets/agentlabs/effects/smoke/smoke_04.png",
+    "/assets/agentlabs/effects/smoke/smoke_05.png",
   ],
   warning: [
-    "/assets/agentforge/effects/warning/warning_01.png",
-    "/assets/agentforge/effects/warning/warning_02.png",
-    "/assets/agentforge/effects/warning/warning_03.png",
+    "/assets/agentlabs/effects/warning/warning_01.png",
+    "/assets/agentlabs/effects/warning/warning_02.png",
+    "/assets/agentlabs/effects/warning/warning_03.png",
   ],
 };
 
@@ -227,22 +228,24 @@ const ANIM_LOOPS: Record<string, boolean> = {
 };
 
 /* ---- Layout constants ---- */
-const DEFENDER_X_RATIO = 0.25;
-const DEFENDER_Y_RATIO = 0.48;
+const DEFENDER_X_RATIO = 0.29;
+const DEFENDER_Y_RATIO = 0.54;
 const ENEMY_POSITIONS: { x: number; y: number }[] = [
-  { x: 0.72, y: 0.18 },
-  { x: 0.84, y: 0.28 },
-  { x: 0.72, y: 0.40 },
-  { x: 0.84, y: 0.52 },
-  { x: 0.72, y: 0.64 },
-  { x: 0.84, y: 0.76 },
+  { x: 0.62, y: 0.26 },
+  { x: 0.74, y: 0.32 },
+  { x: 0.66, y: 0.44 },
+  { x: 0.78, y: 0.52 },
+  { x: 0.64, y: 0.64 },
+  { x: 0.76, y: 0.72 },
+  { x: 0.86, y: 0.40 },
+  { x: 0.86, y: 0.62 },
 ];
 
 const GRID_COLOR = 0x6e82a0;
 const GRID_ALPHA = 0.04;
 const GRID_SIZE_PX = 32;
 
-const ENEMY_APPROACH_X_OFFSET = 60;
+const ENEMY_APPROACH_X_OFFSET = 112;
 const BOB_AMPLITUDE = 2;
 const BOB_SPEED = 0.03;
 
@@ -301,6 +304,27 @@ function easeOutQuad(t: number): number {
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
+}
+
+function formatAttackCounter(
+  currentIndex: number,
+  total: number,
+  status: string,
+): string {
+  if (status === "waveComplete") return "Wave Complete";
+  const safeTotal = Math.max(total, 1);
+  const safeCurrent = Math.min(Math.max(currentIndex + 1, 1), safeTotal);
+  return `Attack ${String(safeCurrent).padStart(2, "0")}/${String(safeTotal).padStart(2, "0")}`;
+}
+
+function inferCombatResult(attack: AttackScenario): "blocked" | "failed" {
+  if (attack.status === "blocked" || attack.status === "passed") return "blocked";
+  if (attack.status === "failed") return "failed";
+  return ["prompt_injection", "role_impersonation", "policy_extraction"].includes(
+    attack.category,
+  )
+    ? "failed"
+    : "blocked";
 }
 
 /* ================================================================== */
@@ -369,7 +393,7 @@ async function preloadEnemyTextures(): Promise<Record<string, Record<string, PIX
       const maxFrames = counts[state] ?? 2;
       const urls: string[] = [];
       for (let i = 1; i <= maxFrames; i++) {
-        urls.push(`/assets/agentforge/enemies/${etype}/${state}/${state}_${String(i).padStart(2, '0')}.png`);
+        urls.push(`/assets/agentlabs/enemies/${etype}/${state}/${state}_${String(i).padStart(2, '0')}.png`);
       }
       r[etype][state] = await loadTextureArray(urls);
     }
@@ -412,6 +436,7 @@ function makeAnimatedSprite(
   scale: number,
   fallbackColor: number,
   fallbackLabel: string,
+  flipX = false,
 ): AnimatedSpriteData {
   const firstTex = textures[initialState]?.[0] ?? null;
   let sprite: PIXI.Sprite;
@@ -421,7 +446,7 @@ function makeAnimatedSprite(
     sprite = new PIXI.Sprite(PIXI.Texture.EMPTY);
   }
   sprite.anchor.set(0.5);
-  sprite.scale.set(scale);
+  sprite.scale.set(flipX ? -scale : scale, scale);
 
   const frameTimes: Record<string, number> = {};
   const loops: Record<string, boolean> = {};
@@ -439,6 +464,7 @@ function makeAnimatedSprite(
     frameTimes,
     loops,
     baseScale: scale,
+    flipX,
   };
 }
 
@@ -615,6 +641,7 @@ export default function PixiArena({
           scale,
           eColor,
           etype.slice(0, 4).toUpperCase(),
+          true,
         );
         eAnim.sprite.x = ex;
         eAnim.sprite.y = ey;
@@ -630,6 +657,18 @@ export default function PixiArena({
         fallbackEnemies.current.set(atk.id, fb);
       }
     }
+  }
+
+  function resetEnemyToOrigin(attackId: string, state: string = "idle"): void {
+    const eAnim = enemyAnimRefs.current.get(attackId);
+    const origin = enemyOriginRefs.current.get(attackId);
+    if (!eAnim || !origin) return;
+
+    eAnim.sprite.x = origin.x;
+    eAnim.sprite.y = origin.y;
+    eAnim.sprite.scale.set(eAnim.flipX ? -eAnim.baseScale : eAnim.baseScale, eAnim.baseScale);
+    eAnim.sprite.alpha = 1;
+    switchAnim(eAnim, state);
   }
 
   /* ================================================================ */
@@ -798,6 +837,7 @@ export default function PixiArena({
             scale,
             eColor,
             etype.slice(0, 4).toUpperCase(),
+            true,
           );
           eAnim.sprite.x = ex;
           eAnim.sprite.y = ey;
@@ -816,19 +856,19 @@ export default function PixiArena({
 
       /* ---- HUD ---- */
       const hudScale = 1;
-      const leftX = 10;
-      const rightX = w - 10;
+      const leftX = 18;
+      const rightX = w - 20;
 
       const labelStyle: Partial<PIXI.TextStyle> = {
         fontFamily: "Inter, monospace",
         fontSize: 9 * hudScale,
-        fill: "#5A6E86",
+        fill: "#D8E6F5",
         fontWeight: "bold",
       };
       const valueStyle: Partial<PIXI.TextStyle> = {
         fontFamily: "Inter, monospace",
         fontSize: 11 * hudScale,
-        fill: "#E8EDF4",
+        fill: "#FFFFFF",
         fontWeight: "bold",
       };
 
@@ -840,7 +880,11 @@ export default function PixiArena({
       waveText.y = 10;
 
       const attackText = new PIXI.Text({
-        text: `ATK ${currentAttackIndex + 1}/${combatants.length}`,
+        text: formatAttackCounter(
+          currentAttackIndex,
+          combatants.length,
+          isWaveComplete ? "waveComplete" : "running",
+        ),
         style: valueStyle as PIXI.TextStyle,
       });
       attackText.x = leftX;
@@ -859,7 +903,7 @@ export default function PixiArena({
       modeText.y = 42;
 
       /* Right-side HUD */
-      const barW = 72;
+      const barW = 82;
 
       const integrityBarBg = new PIXI.Graphics();
       integrityBarBg.rect(0, 0, barW, 6).fill({ color: 0x1a1a2e });
@@ -892,7 +936,7 @@ export default function PixiArena({
       shieldLabel.anchor.set(1, 0);
 
       const scoreText = new PIXI.Text({
-        text: String(score),
+        text: `SCORE ${score}`,
         style: { ...valueStyle, fill: "#FBBF24", fontSize: 12 * hudScale } as PIXI.TextStyle,
       });
       scoreText.x = rightX;
@@ -920,10 +964,10 @@ export default function PixiArena({
       };
 
       /* ---- Narration bar ---- */
-      const nBarW = Math.min(w * 0.6, 480);
-      const nBarH = 32;
+      const nBarW = Math.min(w * 0.55, 560);
+      const nBarH = 36;
       const nBarX = w / 2;
-      const nBarY = h - 20;
+      const nBarY = h - 34;
 
       const narrationBg = new PIXI.Graphics();
       narrationBg.rect(-nBarW / 2, -nBarH / 2, nBarW, nBarH).fill({ color: 0x080c13, alpha: 0.85 });
@@ -936,8 +980,8 @@ export default function PixiArena({
         text: "",
         style: {
           fontFamily: "Inter, monospace",
-          fontSize: 11,
-          fill: "#8FA0B8",
+          fontSize: 12,
+          fill: "#E8EDF4",
           wordWrap: true,
           wordWrapWidth: nBarW - 16,
           align: "center",
@@ -1026,20 +1070,26 @@ export default function PixiArena({
     if (speed <= 0) return;
     if (currentAttackIndex < 0 || currentAttackIndex >= combatants.length) return;
     if (currentAttackIndex === prevAtkIdxRef.current) return;
+
+    if (combatRef.current.active && combatRef.current.attackId) {
+      resetEnemyToOrigin(combatRef.current.attackId);
+      projContainerCleanup();
+    }
+
     prevAtkIdxRef.current = currentAttackIndex;
 
     const atk = combatants[currentAttackIndex];
     if (!atk) return;
 
-    const result: "blocked" | "failed" =
-      atk.status === "blocked" ? "blocked" : "failed";
+    const result = inferCombatResult(atk);
 
     const idx = combatants.indexOf(atk);
     const pos = ENEMY_POSITIONS[Math.min(idx, ENEMY_POSITIONS.length - 1)];
     const { width: w, height: h } = dimsRef.current;
-    const originX = w * (pos?.x ?? 0.78);
-    const originY = h * (pos?.y ?? 0.4);
-    const targetX = w * DEFENDER_X_RATIO + ENEMY_APPROACH_X_OFFSET;
+    const origin = enemyOriginRefs.current.get(atk.id);
+    const originX = origin?.x ?? w * (pos?.x ?? 0.72);
+    const originY = origin?.y ?? h * (pos?.y ?? 0.48);
+    const targetX = Math.min(originX - 42, w * DEFENDER_X_RATIO + ENEMY_APPROACH_X_OFFSET);
     const targetY = h * DEFENDER_Y_RATIO;
     const defX = w * DEFENDER_X_RATIO;
     const defY = h * DEFENDER_Y_RATIO;
@@ -1099,11 +1149,15 @@ export default function PixiArena({
     if (!hud) return;
 
     const { width: w, height: h } = dimsRef.current;
-    const barW = 72;
-    const rightX = w - 10;
+    const barW = 82;
+    const rightX = w - 20;
 
     hud.waveText.text = `WAVE ${String(wave).padStart(2, "0")}`;
-    hud.attackText.text = `ATK ${currentAttackIndex + 1}/${combatants.length}`;
+    hud.attackText.text = formatAttackCounter(
+      currentAttackIndex,
+      combatants.length,
+      isWaveComplete ? "waveComplete" : "running",
+    );
     hud.modeText.text = mode === "agent_hardening" ? "HARDEN" : "RL LAB";
     hud.modeText.style.fill = mode === "agent_hardening" ? "#A78BFA" : "#22D3EE";
 
@@ -1116,14 +1170,14 @@ export default function PixiArena({
     hud.shieldBarFill.rect(0, 0, barW * (shield / 100), 6).fill({ color: 0x22d3ee });
     hud.shieldBarFill.x = rightX - barW;
 
-    hud.scoreText.text = String(score);
+    hud.scoreText.text = `SCORE ${score}`;
 
     /* Update value labels using stored refs */
     const icStr = integrity > 70 ? "#4ADE80" : integrity > 35 ? "#FBBF24" : "#F87171";
     hud.integrityLabel.text = `${integrity}%`;
     hud.integrityLabel.style.fill = icStr;
     hud.shieldLabel.text = `${shield}%`;
-  }, [integrity, shield, score, wave, currentAttackIndex, combatants.length, mode]);
+  }, [integrity, shield, score, wave, currentAttackIndex, combatants.length, mode, isWaveComplete]);
 
   /* ================================================================ */
   /*  NARRATION UPDATE                                                */
@@ -1231,7 +1285,7 @@ export default function PixiArena({
         /* Scale bump and highlight */
         if (eAnim) {
           const bump = 1 + 0.15 * easeOutQuad(progress);
-          eAnim.sprite.scale.set(eAnim.baseScale * bump);
+          eAnim.sprite.scale.set(eAnim.flipX ? -eAnim.baseScale * bump : eAnim.baseScale * bump, eAnim.baseScale * bump);
           eAnim.sprite.alpha = 0.8 + 0.2 * easeOutQuad(progress);
         }
         /* Enemy state to idle still, just highlighted */
@@ -1320,35 +1374,27 @@ export default function PixiArena({
       }
 
       case "enemy_recover": {
-        /* Enemy returns to origin or plays defeated */
-        const isDefeated =
-          seq.result === "blocked" ||
-          enemyStates[seq.attackId] === "defeated";
-
-        if (isDefeated && eAnim) {
-          switchAnim(eAnim, "defeated");
-          /* Spawn smoke */
-          spawnSmokeEffect(eAnim.sprite.x, eAnim.sprite.y);
-          /* Fade out */
-          eAnim.sprite.alpha = Math.max(0.15, 1 - easeOutQuad(progress));
-        } else if (eAnim) {
+        if (eAnim) {
           const t = easeInOutQuad(progress);
           eAnim.sprite.x = lerp(seq.targetX, seq.originX, t);
-          eAnim.sprite.y = lerp(seq.targetY, seq.originY, t * 0.3);
+          eAnim.sprite.y = lerp(seq.targetY, seq.originY, t);
           if (progress < 0.5) {
-            switchAnim(eAnim, "approach");
+            switchAnim(eAnim, seq.result === "blocked" ? "hit" : "approach");
           } else {
             switchAnim(eAnim, "idle");
           }
-          eAnim.sprite.scale.set(eAnim.baseScale);
+          /* Face away from defender while retreating */
+          eAnim.sprite.scale.set(eAnim.baseScale, eAnim.baseScale);
           eAnim.sprite.alpha = 1;
         }
 
         if (progress >= 1) {
-          /* Reset enemy scale */
+          /* Reset enemy — flip back to face defender */
           if (eAnim) {
-            eAnim.sprite.scale.set(eAnim.baseScale);
-            eAnim.sprite.alpha = 1;
+            resetEnemyToOrigin(seq.attackId, enemyStates[seq.attackId] === "defeated" ? "defeated" : "idle");
+            if (enemyStates[seq.attackId] === "defeated") {
+              spawnSmokeEffect(seq.originX, seq.originY);
+            }
           }
           /* Fire callback */
           seq.active = false;

@@ -1,9 +1,8 @@
 
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect } from "react";
 import PixiArena from "./PixiArena";
-import ArenaSpeedControls from "./ArenaSpeedControls";
 import BossWaveBanner from "./BossWaveBanner";
-import type { BattleState, AttackScenario, BattleEvent } from "@/types/agentforge";
+import type { BattleState } from "@/types/arena";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                             */
@@ -14,6 +13,7 @@ export interface PixiArenaWrapperProps {
   onAnimationComplete?: (event: string) => void;
   onAttackResolved?: (attackId: string, result: "blocked" | "failed") => void;
   onWaveComplete?: () => void;
+  animationSpeed?: number;
   className?: string;
 }
 
@@ -45,23 +45,21 @@ function isBossWaveFromState(state: BattleState): boolean {
 
 export default function PixiArenaWrapper({
   battleState,
-  onAnimationComplete,
   onAttackResolved,
   onWaveComplete,
+  animationSpeed: controlledAnimationSpeed,
   className = "",
 }: PixiArenaWrapperProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
-  const [animationSpeed, setAnimationSpeed] = useState(1.0);
   const prevAtkIdxRef = useRef(-1);
-  const skipRef = useRef(false);
+  const animationSpeed = controlledAnimationSpeed ?? 1.0;
 
   /* ---- Track attack index changes to handle skip ---- */
   useEffect(() => {
     const curr = battleState.currentAttackIndex;
     if (curr !== prevAtkIdxRef.current) {
       prevAtkIdxRef.current = curr;
-      skipRef.current = false;
     }
   }, [battleState.currentAttackIndex]);
 
@@ -97,29 +95,6 @@ export default function PixiArenaWrapper({
       window.removeEventListener("resize", measure);
     };
   }, []);
-
-  /* ---- Speed change handler ---- */
-  const handleSpeedChange = useCallback(
-    (speed: number) => {
-      setAnimationSpeed(speed);
-      if (speed >= 999) {
-        skipRef.current = true;
-        /* Fire attack resolved for all pending attacks */
-        const currentAtk = battleState.attacks[battleState.currentAttackIndex];
-        if (currentAtk) {
-          const result =
-            currentAtk.status === "blocked" ? "blocked" : "failed";
-          onAttackResolved?.(currentAtk.id, result);
-        }
-        /* Reset speed after skip */
-        setTimeout(() => {
-          setAnimationSpeed(1.0);
-          skipRef.current = false;
-        }, 100);
-      }
-    },
-    [battleState.attacks, battleState.currentAttackIndex, onAttackResolved],
-  );
 
   /* ---- Boss wave detection ---- */
   const boss = isBossWaveFromState(battleState);
@@ -189,22 +164,6 @@ export default function PixiArenaWrapper({
           bossWave={boss}
         />
       )}
-
-      {/* Speed controls - bottom-left */}
-      <div
-        style={{
-          position: "absolute",
-          bottom: "52px",
-          left: "12px",
-          zIndex: 30,
-        }}
-      >
-        <ArenaSpeedControls
-          currentSpeed={animationSpeed}
-          onSpeedChange={handleSpeedChange}
-        />
-      </div>
-
       {/* Boss wave banner */}
       <BossWaveBanner
         bossWave={boss}

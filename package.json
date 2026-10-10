@@ -1,17 +1,18 @@
 {
-  "name": "agentforge",
-  "version": "0.1.0",
-  "description": "Agent hardening and evaluation system - pre-hackathon foundation",
+  "name": "agentlabs",
+  "version": "1.0.0",
+  "description": "AgentLabs: adversarial hardening for AI agents and small open-weight models",
   "private": true,
   "scripts": {
-    "test": "npx playwright test --config=tests/playwright/playwright.config.ts",
-    "test:ui": "npx playwright test --ui --config=tests/playwright/playwright.config.ts",
-    "setup": "cd backend && pip install -r requirements.txt && cd ../agentforge-react && npm install",
-    "dev:backend": "cd backend && python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload",
-    "dev:frontend": "cd agentforge-react && npm run dev"
+    "setup": "python3 -m pip install -r backend/requirements-dev.txt && npm --prefix frontend install",
+    "dev:backend": "cd backend && python3 -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "test:backend": "python3 -m pytest",
+    "test:frontend": "npm --prefix frontend run lint && npm --prefix frontend run typecheck && npm --prefix frontend test",
+    "build": "npm --prefix frontend run build",
+    "test:e2e": "npx playwright test --config=tests/playwright/playwright.config.ts"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1",
-    "playwright": "^1.59.1"
+    "@playwright/test": "^1.59.1"
   }
 }
